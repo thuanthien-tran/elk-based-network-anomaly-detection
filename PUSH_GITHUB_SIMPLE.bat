@@ -33,7 +33,7 @@ if %ERRORLEVEL% EQU 0 (
     echo 2. Internet connection
     echo 3. Repository exists on GitHub
     echo.
-    echo For detailed help, see: HUONG_DAN_PUSH_GITHUB.md
+    echo For detailed help, see: README_COMPLETE.md
 )
 
 echo.
