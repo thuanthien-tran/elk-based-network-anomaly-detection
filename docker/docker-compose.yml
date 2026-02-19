@@ -1,0 +1,79 @@
+version: '3.8'
+
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: elk-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms2g -Xmx2g"
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - elk-network
+    mem_limit: 4g
+    mem_reservation: 2g
+    cpus: 2.0
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.11.0
+    container_name: elk-logstash
+    volumes:
+      - ../config/logstash/pipeline.conf:/usr/share/logstash/pipeline/pipeline.conf:ro
+      - logstash_data:/usr/share/logstash/data
+    ports:
+      - "5044:5044"
+      - "9600:9600"
+    environment:
+      - "LS_JAVA_OPTS=-Xmx1g -Xms1g"
+    depends_on:
+      - elasticsearch
+    networks:
+      - elk-network
+    mem_limit: 2g
+    mem_reservation: 1g
+    cpus: 1.0
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.0
+    container_name: elk-kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - SERVER_HOST=0.0.0.0
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+    networks:
+      - elk-network
+    mem_limit: 1g
+    mem_reservation: 512m
+    cpus: 0.5
+
+  # Optional: Filebeat container (if needed)
+  # filebeat:
+  #   image: docker.elastic.co/beats/filebeat:8.11.0
+  #   container_name: elk-filebeat
+  #   user: root
+  #   volumes:
+  #     - ../config/filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+  #     - /var/log:/var/log:ro
+  #     - /var/lib/docker/containers:/var/lib/docker/containers:ro
+  #   depends_on:
+  #     - logstash
+  #   networks:
+  #     - elk-network
+
+volumes:
+  elasticsearch_data:
+    driver: local
+  logstash_data:
+    driver: local
+
+networks:
+  elk-network:
+    driver: bridge

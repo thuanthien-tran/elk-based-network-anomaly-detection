@@ -1,0 +1,21 @@
+# Elasticsearch (use 8.x to match ES server version)
+elasticsearch>=8.0.0,<9.0.0
+
+# Data Processing
+pandas>=1.5.0
+numpy>=1.23.0
+
+# Machine Learning
+scikit-learn>=1.2.0
+joblib>=1.2.0
+
+# Visualization
+matplotlib>=3.6.0
+seaborn>=0.12.0
+pillow>=9.0.0
+
+# Utilities
+python-dateutil>=2.8.0
+
+# Imbalanced Learning
+imbalanced-learn>=0.11.0

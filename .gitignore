@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# ML Models
+*.pkl
+*.joblib
+*.h5
+*.pth
+
+# Data
+*.csv
+*.json
+data/
+datasets/
+
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Elasticsearch
+elasticsearch/
+logs/
+
+# Docker
+docker-compose.override.yml
+
+# Config with sensitive data
+config/secrets.yml
+*.key
+*.pem
+
+# Executables
+*.exe
+filebeat.exe
+winlogbeat.exe
+
+# Reports (if contains sensitive data)
+reports/*.pdf
+# reports/*.docx  # Uncomment if you don't want to commit docx files
+
+# Generated documentation (optional - comment out if you want to commit)
+# TONG_HOP_CODE_FINAL.docx
+# TONG_HOP_CODE.md
