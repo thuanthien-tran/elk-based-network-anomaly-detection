@@ -4,7 +4,7 @@ Script to extract logs from Elasticsearch for ML processing
 """
 
 from elasticsearch import Elasticsearch
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import pandas as pd
 import json
 import argparse
@@ -387,16 +387,21 @@ def main():
             print("  3. Or skip connection check: --skip-connection-check (for testing)")
             sys.exit(1)
     
-    # Calculate time range
-    end_time = datetime.now()
+    # Calculate time range (use UTC to match Elasticsearch)
+    end_time = datetime.now(timezone.utc)
     start_time = end_time - timedelta(hours=args.hours)
     
-    print(f"Extracting logs from {start_time} to {end_time}")
+    # Format as ISO 8601 with Z suffix for UTC
+    start_time_iso = start_time.isoformat().replace('+00:00', 'Z')
+    end_time_iso = end_time.isoformat().replace('+00:00', 'Z')
+    
+    print(f"Extracting logs from {start_time} (UTC) to {end_time} (UTC)")
+    print(f"  ISO format: {start_time_iso} to {end_time_iso}")
     
     # Extract logs in batches
     all_logs = []
     batch_count = 0
-    for batch_logs in extract_logs(es, args.index, start_time.isoformat(), end_time.isoformat()):
+    for batch_logs in extract_logs(es, args.index, start_time_iso, end_time_iso):
         all_logs.extend(batch_logs)
         batch_count += 1
         print(f"Processed batch {batch_count}, total logs: {len(all_logs)}")

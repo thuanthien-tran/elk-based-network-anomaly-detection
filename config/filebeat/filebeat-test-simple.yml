@@ -3,7 +3,7 @@ filebeat.inputs:
     id: test-logs-simple
     enabled: true
     paths:
-      - C:/Users/thuan/Desktop/test.log
+      - C:/Users/thuan/Documents/test.log
 
 output.logstash:
   hosts: ["127.0.0.1:5044"]

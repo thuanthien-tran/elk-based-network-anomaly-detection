@@ -5,6 +5,7 @@ Data preprocessing script for network logs
 
 import pandas as pd
 import numpy as np
+import sys
 from datetime import datetime
 import argparse
 from imblearn.over_sampling import SMOTE
@@ -193,7 +194,17 @@ def main():
     
     # Load data
     print(f"Loading data from {args.input}...")
-    df = pd.read_csv(args.input)
+    try:
+        df = pd.read_csv(args.input)
+    except pd.errors.EmptyDataError:
+        print("[ERROR] File is empty or has no columns.")
+        print("  Cause: data_extraction.py likely extracted 0 logs from Elasticsearch.")
+        print("  Fix: 1) Start Filebeat and send logs  2) Check index exists: curl http://127.0.0.1:9200/_cat/indices?v")
+        print("       3) Re-run: python scripts/data_extraction.py --index test-* --output data/raw/logs.csv --hours 24 --host 127.0.0.1 --port 9200")
+        sys.exit(1)
+    if len(df) == 0:
+        print("[ERROR] CSV has 0 rows. Run data_extraction.py first and ensure Elasticsearch has logs (Filebeat running).")
+        sys.exit(1)
     print(f"Loaded {len(df)} records")
     print(f"Columns: {list(df.columns)}")
     
