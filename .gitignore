@@ -59,6 +59,10 @@ winlogbeat.exe
 reports/*.pdf
 # reports/*.docx  # Uncomment if you don't want to commit docx files
 
+# Filebeat runtime
+config/filebeat/data/
+config/filebeat/logs/
+
 # Generated documentation (optional - comment out if you want to commit)
 # TONG_HOP_CODE_FINAL.docx
 # TONG_HOP_CODE.md
