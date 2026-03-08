@@ -21,12 +21,18 @@ if not exist ".git" (
     exit /b 1
 )
 
-echo  [1/4] Trang thai Git...
+echo  [1/5] Trang thai Git...
 git status -s
 echo.
 
-echo  [2/4] Add file (tuan thu .gitignore)...
+echo  [2/5] Bo qua dataset (data/) - khong day len...
+git rm -r --cached data/ 2>nul
+echo    Dataset giu lai o may, khong push.
+echo.
+
+echo  [3/5] Add file (tuan thu .gitignore, bo data/)...
 git add .
+git reset -- data/ 2>nul
 echo.
 
 git diff --staged --quiet 2>nul
@@ -38,7 +44,7 @@ if %ERRORLEVEL% EQU 0 (
     exit /b 0
 )
 
-echo  [3/4] Commit...
+echo  [4/5] Commit...
 set /p MSG="  Nhap commit message (Enter = mac dinh): "
 if "%MSG%"=="" set "MSG=Update ELKShield project"
 git commit -m "%MSG%"
@@ -49,7 +55,7 @@ if %ERRORLEVEL% NEQ 0 (
 )
 echo.
 
-echo  [4/4] Push len origin main...
+echo  [5/5] Push len origin main...
 git push origin main
 
 if %ERRORLEVEL% EQU 0 (

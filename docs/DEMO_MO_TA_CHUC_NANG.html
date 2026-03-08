@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ELKShield Demo – Mô tả chức năng</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --accent: #38bdf8;
+      --accent2: #22d3ee;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      margin: 0;
+      padding: 2rem;
+      max-width: 900px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    h1 {
+      font-size: 1.75rem;
+      color: var(--accent);
+      border-bottom: 2px solid var(--accent);
+      padding-bottom: 0.5rem;
+      margin-top: 0;
+    }
+    h2 {
+      font-size: 1.25rem;
+      color: var(--accent2);
+      margin-top: 2rem;
+      margin-bottom: 0.75rem;
+    }
+    .subtitle { color: var(--muted); font-size: 0.95rem; margin-bottom: 2rem; }
+    section {
+      background: var(--card);
+      border-radius: 10px;
+      padding: 1.25rem 1.5rem;
+      margin-bottom: 1.25rem;
+      border-left: 4px solid var(--accent);
+    }
+    .option {
+      display: flex;
+      gap: 1rem;
+      margin-bottom: 1rem;
+      align-items: flex-start;
+    }
+    .option:last-child { margin-bottom: 0; }
+    .option-num {
+      flex-shrink: 0;
+      width: 2.25rem;
+      height: 2.25rem;
+      background: var(--accent);
+      color: var(--bg);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 0.95rem;
+    }
+    .option-body h3 { margin: 0 0 0.25rem 0; font-size: 1rem; }
+    .option-body p { margin: 0; color: var(--muted); font-size: 0.9rem; }
+    .flow {
+      background: #0c1222;
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      font-family: ui-monospace, monospace;
+      font-size: 0.9rem;
+      color: var(--accent2);
+      margin: 1rem 0;
+    }
+    .flow strong { color: #fff; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1rem 0;
+      font-size: 0.9rem;
+    }
+    th, td {
+      padding: 0.6rem 0.75rem;
+      text-align: left;
+      border-bottom: 1px solid #334155;
+    }
+    th { color: var(--accent); }
+    .menu-con { margin-top: 0.5rem; padding-left: 1rem; border-left: 2px solid #334155; }
+    @media print {
+      body { background: #fff; color: #111; }
+      section { background: #f8fafc; border-left-color: #0ea5e9; }
+      .option-num { background: #0ea5e9; color: #fff; }
+      .flow { background: #f1f5f9; color: #0c4a6e; }
+      th { color: #0369a1; }
+    }
+  </style>
+</head>
+<body>
+  <h1>ELKShield Demo – Mô tả chức năng</h1>
+  <p class="subtitle">Tài liệu mô tả từng lựa chọn trong DEMO.bat và cách chọn để demo.</p>
+
+  <h2>1. Menu chính (0–9)</h2>
+
+  <section>
+    <h3 style="margin-top:0; color: var(--accent2);">Hệ thống (ELK)</h3>
+    <div class="option">
+      <span class="option-num">1</span>
+      <div class="option-body">
+        <h3>Reset dữ liệu</h3>
+        <p>Xóa index cũ trong Elasticsearch (test-logs, ml-alerts…) và có thể xóa registry Filebeat. Dùng khi muốn bắt đầu lại từ đầu.</p>
+      </div>
+    </div>
+    <div class="option">
+      <span class="option-num">2</span>
+      <div class="option-body">
+        <h3>Chạy Filebeat</h3>
+        <p>Mở cửa sổ Filebeat đọc <strong>test.log</strong> (Desktop/Documents) và gửi log lên Logstash → Elasticsearch. Bắt buộc trước khi chạy Detection online [7]. Giữ cửa sổ mở, đợi 15–20 giây.</p>
+      </div>
+    </div>
+    <div class="option">
+      <span class="option-num">3</span>
+      <div class="option-body">
+        <h3>Kiểm tra index / Mở Kibana</h3>
+        <p>Kiểm tra index trên ES và mở Kibana (http://localhost:5601). Dùng để xem ml-alerts sau khi chạy [7]. Index pattern: <strong>ml-alerts-*</strong>.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h3 style="margin-top:0; color: var(--accent2);">Tạo log mẫu (cho test detection)</h3>
+    <div class="option">
+      <span class="option-num">4</span>
+      <div class="option-body">
+        <h3>Tạo log mẫu – nhập số dòng</h3>
+        <p>Hỏi số dòng normal và attack, ghi vào test.log (Desktop + Documents) với format SSH. Dùng khi muốn tùy chỉnh lượng log.</p>
+      </div>
+    </div>
+    <div class="option">
+      <span class="option-num">5</span>
+      <div class="option-body">
+        <h3>Tạo log mẫu mặc định</h3>
+        <p>Ghi sẵn 2 dòng normal + 5 dòng attack vào test.log, không hỏi. Cách nhanh nhất để có log cho demo.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h3 style="margin-top:0; color: var(--accent2);">Train model (offline)</h3>
+    <div class="option">
+      <span class="option-num">6</span>
+      <div class="option-body">
+        <h3>Train model (menu con)</h3>
+        <p>Mở menu con chỉ gồm: train unified, chuẩn bị Synthetic, train Russell Mitchell, train từ CSV. Dùng khi cần train model mới hoặc chuẩn bị dữ liệu. Detection online [7] dùng model do [6]-[1] tạo ra.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h3 style="margin-top:0; color: var(--accent2);">Detection (realtime)</h3>
+    <div class="option">
+      <span class="option-num">7</span>
+      <div class="option-body">
+        <h3>Detection online</h3>
+        <p>Lấy log từ ES (hoặc fallback đọc test.log) → preprocess → load <strong>ssh_attack_model.joblib</strong> → predict → ghi ml-alerts. Cần đã chạy [6]-[1] và bật [2] Filebeat. Đây là option chính để demo phát hiện tấn công realtime.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h3 style="margin-top:0; color: var(--accent2);">Demo</h3>
+    <div class="option">
+      <span class="option-num">8</span>
+      <div class="option-body">
+        <h3>Demo nhanh</h3>
+        <p>Chạy script Python không qua ELK: đọc dataset có sẵn, predict, in kết quả. Dùng khi không bật Docker/ELK.</p>
+      </div>
+    </div>
+    <div class="option">
+      <span class="option-num">9</span>
+      <div class="option-body">
+        <h3>Chạy nhanh</h3>
+        <p>Ghi log → đợi 15s → extract từ ES → preprocess → train (Isolation Forest tại chỗ) → ghi ml-alerts → mở Kibana. Luồng all-in-one, không dùng model unified.</p>
+      </div>
+    </div>
+    <div class="option">
+      <span class="option-num">0</span>
+      <div class="option-body">
+        <h3>Thoát</h3>
+        <p>Thoát chương trình DEMO.bat.</p>
+      </div>
+    </div>
+  </section>
+
+  <h2>2. Menu con [6] Train model</h2>
+  <table>
+    <thead>
+      <tr><th>Số</th><th>Chức năng</th><th>Mô tả</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>1</strong></td><td>Train UNIFIED</td><td>Gộp Synthetic + Russell + Kaggle → train → lưu <strong>ssh_attack_model.joblib</strong>. Cần đã chạy [2][3][4] để có file processed. Sau đó dùng [7] Detection online.</td></tr>
+      <tr><td><strong>2</strong></td><td>Chuẩn bị Synthetic</td><td>Sinh ~8000 dòng → data/processed/logs.csv. Chỉ tạo dữ liệu, không train. Dùng cho [1] unified.</td></tr>
+      <tr><td><strong>3</strong></td><td>Train Russell Mitchell</td><td>auth.log → CSV → preprocess → train → ghi ES. Cần thư mục data\russellmitchell\gather.</td></tr>
+      <tr><td><strong>4</strong></td><td>Train từ CSV</td><td>A: Russell Mitchell CSV, B: SSH Kaggle, C: File CSV bất kỳ.</td></tr>
+      <tr><td><strong>0</strong></td><td>Quay lại</td><td>Về menu chính.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>3. Cách chọn để demo</h2>
+
+  <section>
+    <h3 style="margin-top:0; color: var(--accent2);">Demo Detection online (khuyến nghị)</h3>
+    <div class="flow">
+      <strong>[5]</strong> Tạo log mặc định → <strong>[2]</strong> Chạy Filebeat (giữ mở, đợi 15–20s) → <strong>[6]</strong>→<strong>[1]</strong> Train unified (nếu chưa có model) → <strong>[7]</strong> Detection online → <strong>[3]</strong> Mở Kibana, xem ml-alerts-*
+    </div>
+    <p style="margin:0; color: var(--muted); font-size: 0.9rem;">Thứ tự ngắn: <strong>5 → 2 → (6→1 nếu cần) → 7 → 3</strong>.</p>
+  </section>
+
+  <section>
+    <h3 style="margin-top:0; color: var(--accent2);">Demo chỉ ML (không ELK)</h3>
+    <p style="margin:0;">Chọn <strong>[8]</strong> Demo nhanh.</p>
+  </section>
+
+  <section>
+    <h3 style="margin-top:0; color: var(--accent2);">Demo all-in-one nhanh</h3>
+    <p style="margin:0;"><strong>[5]</strong> Tạo log → <strong>[2]</strong> Filebeat → <strong>[9]</strong> Chạy nhanh (tự train tại chỗ + ghi ml-alerts + mở Kibana).</p>
+  </section>
+
+  <p class="subtitle" style="margin-top: 2rem;">ELKShield – SIEM + ML Hybrid. Tài liệu mô tả chức năng DEMO.bat.</p>
+</body>
+</html>

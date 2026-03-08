@@ -57,4 +57,5 @@ echo Next steps:
 echo 1. Start ELK Stack: cd docker ^&^& docker-compose up -d
 echo 2. Read: HUONG_DAN_CHAY_DU_AN.md
 echo.
-pause
+REM Khi chay tu DEMO.bat hoac RUN_BY_GUI=1 thi khong pause
+if not defined RUN_BY_GUI pause

@@ -8,8 +8,8 @@ import numpy as np
 from sklearn.ensemble import IsolationForest, RandomForestClassifier
 from sklearn.svm import OneClassSVM
 from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
-from sklearn.metrics import classification_report, confusion_matrix, roc_curve, auc, roc_auc_score
+from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold, GridSearchCV
+from sklearn.metrics import classification_report, confusion_matrix, roc_curve, auc, roc_auc_score, precision_score, recall_score, f1_score
 import joblib
 import argparse
 from datetime import datetime
@@ -31,6 +31,12 @@ class NetworkAnomalyDetector:
         self.scaler = StandardScaler()
         self.label_encoders = {}  # Dictionary to store encoders for each column
         self.threshold = None  # Threshold for anomaly detection
+
+    def _get_anomaly_scores(self, X_scaled):
+        """Return scores where lower = more anomalous (for IF/OCSVM)."""
+        if self.model_type == 'one_class_svm' and not hasattr(self.model, 'score_samples'):
+            return -self.model.decision_function(X_scaled)
+        return self.model.score_samples(X_scaled)
         
     def prepare_features(self, df):
         """Prepare features for ML model"""
@@ -77,11 +83,18 @@ class NetworkAnomalyDetector:
             failed_counts = df_processed.groupby('source_ip')['failed_login'].sum()
             df_processed['failed_login_count'] = df_processed['source_ip'].map(failed_counts).fillna(0)
         
-        # Select numerical features
+        # Select numerical features (SSH + web per DU_KIEN_DATASET)
         feature_cols = [
             'hour', 'day_of_week', 'is_weekend',
             'requests_per_ip', 'failed_login_count'
         ]
+        web_cols = [
+            'request_length', 'has_query_string', 'is_4xx', 'is_5xx',
+            'error_rate_per_ip', 'response', 'count_4xx_per_ip', 'count_5xx_per_ip'
+        ]
+        for c in web_cols:
+            if c in df_processed.columns:
+                feature_cols.append(c)
         
         # Add IP hash
         if 'ip_hash' in df_processed.columns:
@@ -99,9 +112,10 @@ class NetworkAnomalyDetector:
         
         return X, df_processed
     
-    def train(self, df, contamination=0.1, use_cv=True, cv_folds=5, handle_imbalance=False):
+    def train(self, df, contamination=0.1, use_cv=True, cv_folds=5, handle_imbalance=False,
+              time_split=False, time_split_ratio=0.7, tune_hyperparams=False, metrics_output=None):
         """
-        Train the anomaly detection model
+        Train the anomaly detection model.
         
         Args:
             df: Training dataframe
@@ -109,15 +123,31 @@ class NetworkAnomalyDetector:
             use_cv: Use cross-validation for evaluation
             cv_folds: Number of CV folds
             handle_imbalance: Handle class imbalance for supervised learning
+            time_split: If True, split by time (first ratio = train, rest = test) to avoid data leakage
+            time_split_ratio: Fraction of data for training when time_split=True (default 0.7)
+            tune_hyperparams: If True, use GridSearchCV for Random Forest (ignored for IF/OCSVM)
+            metrics_output: If set, save metrics dict to this JSON path (e.g. metrics.json)
         """
         print(f"Training {self.model_type} model...")
         
+        # Time-based split (DU_KIEN_DATASET: train giai doan dau, test giai doan sau)
+        train_df = df
+        test_df = None
+        if time_split and 'timestamp' in df.columns:
+            df_sorted = df.sort_values('timestamp').reset_index(drop=True)
+            n = len(df_sorted)
+            split_idx = int(n * time_split_ratio)
+            if split_idx > 0 and split_idx < n:
+                train_df = df_sorted.iloc[:split_idx]
+                test_df = df_sorted.iloc[split_idx:]
+                print(f"Time-based split: train {len(train_df)} (first {time_split_ratio*100:.0f}%), test {len(test_df)} (last {(1-time_split_ratio)*100:.0f}%)")
+        
         # Prepare features
-        X, df_processed = self.prepare_features(df)
+        X, df_processed = self.prepare_features(train_df)
         
         # Handle imbalance for supervised learning
-        if self.model_type == 'random_forest' and handle_imbalance and 'is_attack' in df.columns:
-            y = df['is_attack'].astype(int)
+        if self.model_type == 'random_forest' and handle_imbalance and 'is_attack' in train_df.columns:
+            y = train_df['is_attack'].astype(int)
             print(f"Original class distribution: {y.value_counts().to_dict()}")
             
             # Use SMOTE for oversampling
@@ -142,11 +172,25 @@ class NetworkAnomalyDetector:
             self.model.fit(X_scaled)
             
             # Find optimal threshold using score distribution
-            scores = self.model.score_samples(X_scaled)
+            scores = self._get_anomaly_scores(X_scaled)
             # Use percentile-based threshold
             threshold_percentile = (1 - contamination) * 100
             self.threshold = np.percentile(scores, threshold_percentile)
             print(f"Anomaly threshold (score): {self.threshold:.4f}")
+            if test_df is not None and len(test_df) > 0 and 'is_attack' in test_df.columns:
+                X_test_orig, _ = self.prepare_features(test_df)
+                for c in X.columns:
+                    if c not in X_test_orig.columns:
+                        X_test_orig[c] = 0
+                X_test_orig = X_test_orig[X.columns].fillna(0)
+                X_test = self.scaler.transform(X_test_orig)
+                y_test = test_df['is_attack'].astype(int).values
+                scores_test = self._get_anomaly_scores(X_test)
+                y_pred = (scores_test < self.threshold).astype(int)
+                print("\n[Time-split] Test set metrics (hold-out period):")
+                print(classification_report(y_test, y_pred))
+                if len(np.unique(y_test)) > 1:
+                    print(f"ROC AUC: {roc_auc_score(y_test, -scores_test):.4f}")
             
         elif self.model_type == 'one_class_svm':
             self.model = OneClassSVM(
@@ -157,10 +201,24 @@ class NetworkAnomalyDetector:
             self.model.fit(X_scaled)
             
             # Find threshold
-            scores = self.model.score_samples(X_scaled)
+            scores = self._get_anomaly_scores(X_scaled)
             threshold_percentile = (1 - contamination) * 100
             self.threshold = np.percentile(scores, threshold_percentile)
             print(f"Anomaly threshold (score): {self.threshold:.4f}")
+            if test_df is not None and len(test_df) > 0 and 'is_attack' in test_df.columns:
+                X_test_orig, _ = self.prepare_features(test_df)
+                for c in X.columns:
+                    if c not in X_test_orig.columns:
+                        X_test_orig[c] = 0
+                X_test_orig = X_test_orig[X.columns].fillna(0)
+                X_test = self.scaler.transform(X_test_orig)
+                y_test = test_df['is_attack'].astype(int).values
+                scores_test = self._get_anomaly_scores(X_test)
+                y_pred = (scores_test < self.threshold).astype(int)
+                print("\n[Time-split] Test set metrics (hold-out period):")
+                print(classification_report(y_test, y_pred))
+                if len(np.unique(y_test)) > 1:
+                    print(f"ROC AUC: {roc_auc_score(y_test, -scores_test):.4f}")
             
         elif self.model_type == 'random_forest':
             # For supervised learning, need labels
@@ -168,20 +226,45 @@ class NetworkAnomalyDetector:
                 raise ValueError("Random Forest requires 'is_attack' column")
             
             y = df_processed['is_attack'].astype(int)
-            X_train, X_test, y_train, y_test = train_test_split(
-                X_scaled, y, test_size=0.2, random_state=42, stratify=y
-            )
+            if test_df is not None and len(test_df) > 0:
+                X_train, y_train = X_scaled, y
+                X_test_orig, _ = self.prepare_features(test_df)
+                for c in X.columns:
+                    if c not in X_test_orig.columns:
+                        X_test_orig[c] = 0
+                X_test_orig = X_test_orig[X.columns].fillna(0)
+                X_test = self.scaler.transform(X_test_orig)
+                y_test = test_df['is_attack'].astype(int).values
+            else:
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X_scaled, y, test_size=0.2, random_state=42, stratify=y
+                )
             
-            self.model = RandomForestClassifier(
-                n_estimators=100,
-                random_state=42,
-                n_jobs=-1,
-                class_weight='balanced'  # Handle imbalance
-            )
-            self.model.fit(X_train, y_train)
+            if tune_hyperparams:
+                param_grid = {
+                    'n_estimators': [50, 100, 200],
+                    'max_depth': [10, 20, None],
+                    'min_samples_split': [2, 5],
+                }
+                print("GridSearchCV (Random Forest)...")
+                gs = GridSearchCV(
+                    RandomForestClassifier(random_state=42, n_jobs=-1, class_weight='balanced'),
+                    param_grid, cv=min(3, cv_folds), scoring='f1', n_jobs=-1, verbose=1
+                )
+                gs.fit(X_train, y_train)
+                self.model = gs.best_estimator_
+                print(f"Best params: {gs.best_params_}, best CV F1: {gs.best_score_:.4f}")
+            else:
+                self.model = RandomForestClassifier(
+                    n_estimators=100,
+                    random_state=42,
+                    n_jobs=-1,
+                    class_weight='balanced'  # Handle imbalance
+                )
+                self.model.fit(X_train, y_train)
             
             # Cross-validation
-            if use_cv:
+            if use_cv and not tune_hyperparams:
                 cv_scores = cross_val_score(
                     self.model, X_train, y_train, 
                     cv=StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42),
@@ -212,6 +295,20 @@ class NetworkAnomalyDetector:
                         'importance': self.model.feature_importances_
                     }).sort_values('importance', ascending=False)
                     print(feature_importance.head(10).to_string(index=False))
+            
+            # Collect metrics for JSON output
+            if metrics_output and len(np.unique(y_test)) > 1:
+                metrics_dict = {
+                    'model_type': self.model_type,
+                    'precision': float(precision_score(y_test, y_pred, zero_division=0)),
+                    'recall': float(recall_score(y_test, y_pred, zero_division=0)),
+                    'f1': float(f1_score(y_test, y_pred, zero_division=0)),
+                    'roc_auc': float(roc_auc_score(y_test, y_pred_proba)),
+                    'confusion_matrix': confusion_matrix(y_test, y_pred).tolist(),
+                }
+                with open(metrics_output, 'w', encoding='utf-8') as f:
+                    json.dump(metrics_dict, f, indent=2)
+                print(f"\nMetrics saved to {metrics_output}")
         
         print("Model training completed!")
     
@@ -233,7 +330,7 @@ class NetworkAnomalyDetector:
         
         # Predict
         if self.model_type in ['isolation_forest', 'one_class_svm']:
-            scores = self.model.score_samples(X_scaled)
+            scores = self._get_anomaly_scores(X_scaled)
             
             # Use threshold if available, otherwise use default prediction
             if self.threshold is not None:
@@ -294,6 +391,14 @@ def main():
                        help='Number of CV folds')
     parser.add_argument('--handle-imbalance', action='store_true',
                        help='Handle class imbalance (for supervised learning)')
+    parser.add_argument('--time-split', action='store_true',
+                       help='Split by time (first N%% train, rest test) to avoid data leakage')
+    parser.add_argument('--time-split-ratio', type=float, default=0.7,
+                       help='Fraction for training when --time-split (default 0.7)')
+    parser.add_argument('--tune', action='store_true',
+                       help='Use GridSearchCV to tune Random Forest (ignored for IF/OCSVM)')
+    parser.add_argument('--metrics-output', metavar='FILE', default=None,
+                       help='Save metrics (precision, recall, F1, ROC-AUC) to JSON file (RF only)')
     
     args = parser.parse_args()
     
@@ -308,11 +413,15 @@ def main():
     # Train or load model
     if args.train:
         detector.train(
-            df, 
+            df,
             contamination=args.contamination,
             use_cv=args.use_cv,
             cv_folds=args.cv_folds,
-            handle_imbalance=args.handle_imbalance
+            handle_imbalance=args.handle_imbalance,
+            time_split=args.time_split,
+            time_split_ratio=args.time_split_ratio,
+            tune_hyperparams=args.tune,
+            metrics_output=args.metrics_output
         )
         if args.model_file:
             detector.save_model(args.model_file)

@@ -19,3 +19,11 @@ python-dateutil>=2.8.0
 
 # Imbalanced Learning
 imbalanced-learn>=0.11.0
+
+# Export docs (optional, for export_demo_mota_to_docx.py)
+python-docx>=0.8.11
+
+# Giao diện mô phỏng
+streamlit>=1.28.0
+# Ứng dụng desktop (run_simulation_app.py) - không dùng web
+customtkinter>=5.2.0

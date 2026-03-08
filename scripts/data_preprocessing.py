@@ -27,7 +27,7 @@ def clean_data(df):
     df[numeric_cols] = df[numeric_cols].fillna(0)
     
     # Fill categorical columns with 'unknown'
-    categorical_cols = df.select_dtypes(include=['object']).columns
+    categorical_cols = df.select_dtypes(include=['object', 'str']).columns
     df[categorical_cols] = df[categorical_cols].fillna('unknown')
     
     return df
@@ -113,6 +113,46 @@ def extract_attack_features(df, window_minutes=5):
     
     return df
 
+def extract_web_features(df, ip_column='source_ip'):
+    """
+    Extract features for web/HTTP logs (DU_KIEN_DATASET: URL, status code, 4xx/5xx rate, query pattern).
+    """
+    print("Extracting web features...")
+    
+    # Request/URL length
+    if 'request' in df.columns:
+        df['request_length'] = df['request'].fillna('').astype(str).str.len()
+        df['has_query_string'] = (df['request'].fillna('').astype(str).str.contains(r'\?', regex=True)).astype(int)
+    else:
+        df['request_length'] = 0
+        df['has_query_string'] = 0
+    
+    # Status code (response)
+    if 'response' in df.columns:
+        df['response'] = pd.to_numeric(df['response'], errors='coerce').fillna(0).astype(int)
+        df['is_4xx'] = ((df['response'] >= 400) & (df['response'] < 500)).astype(int)
+        df['is_5xx'] = (df['response'] >= 500).astype(int)
+    else:
+        df['response'] = 0
+        df['is_4xx'] = 0
+        df['is_5xx'] = 0
+    
+    # Per-IP error rate (4xx+5xx count / request count)
+    if ip_column in df.columns:
+        ip_total = df.groupby(ip_column).size()
+        df['requests_per_ip'] = df[ip_column].map(ip_total).fillna(0)
+        err = df[df['is_4xx'] == 1].groupby(ip_column).size()
+        df['count_4xx_per_ip'] = df[ip_column].map(err).fillna(0)
+        err5 = df[df['is_5xx'] == 1].groupby(ip_column).size()
+        df['count_5xx_per_ip'] = df[ip_column].map(err5).fillna(0)
+        df['error_rate_per_ip'] = np.where(
+            df['requests_per_ip'] > 0,
+            (df['count_4xx_per_ip'] + df['count_5xx_per_ip']) / df['requests_per_ip'],
+            0
+        )
+    
+    return df
+
 def normalize_numeric_features(df, columns=None):
     """Normalize numeric features"""
     print("Normalizing numeric features...")
@@ -189,18 +229,20 @@ def main():
                        help='Handle class imbalance')
     parser.add_argument('--window-minutes', type=int, default=5,
                        help='Time window in minutes for window-based features')
+    parser.add_argument('--log-type', choices=['ssh', 'web', 'auto'], default='auto',
+                       help='Log type: ssh (SSH features), web (web features), auto (detect from columns)')
     
     args = parser.parse_args()
     
     # Load data
     print(f"Loading data from {args.input}...")
     try:
-        df = pd.read_csv(args.input)
+        df = pd.read_csv(args.input, encoding="utf-8", encoding_errors="replace")
     except pd.errors.EmptyDataError:
         print("[ERROR] File is empty or has no columns.")
         print("  Cause: data_extraction.py likely extracted 0 logs from Elasticsearch.")
         print("  Fix: 1) Start Filebeat and send logs  2) Check index exists: curl http://127.0.0.1:9200/_cat/indices?v")
-        print("       3) Re-run: python scripts/data_extraction.py --index test-* --output data/raw/logs.csv --hours 24 --host 127.0.0.1 --port 9200")
+        print("       3) Re-run: python scripts/data_extraction.py --index \"test-logs-*,ssh-logs-*\" --output data/raw/logs.csv --hours 24 --host 127.0.0.1 --port 9200")
         sys.exit(1)
     if len(df) == 0:
         print("[ERROR] CSV has 0 rows. Run data_extraction.py first and ensure Elasticsearch has logs (Filebeat running).")
@@ -216,9 +258,24 @@ def main():
         df = extract_time_features(df)
     
     if args.extract_ip:
-        df = extract_ip_features(df)
+        df = extract_ip_features(df, ip_column='source_ip' if 'source_ip' in df.columns else 'clientip')
     
-    if args.extract_attack:
+    # Feature set by log type (DU_KIEN_DATASET: SSH vs web-specific features)
+    log_type = args.log_type
+    if log_type == 'auto':
+        has_web = 'request' in df.columns and 'response' in df.columns
+        has_ssh = 'status' in df.columns and 'source_ip' in df.columns
+        if has_web and has_ssh:
+            log_type = 'both'
+        elif has_web:
+            log_type = 'web'
+        elif has_ssh:
+            log_type = 'ssh'
+        else:
+            log_type = 'ssh'
+    if log_type in ('web', 'both'):
+        df = extract_web_features(df)
+    if args.extract_attack and ('status' in df.columns and 'source_ip' in df.columns):
         df = extract_attack_features(df, window_minutes=args.window_minutes)
     
     if args.normalize:

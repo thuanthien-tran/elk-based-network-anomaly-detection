@@ -1,4 +1,4 @@
-filebeat.inputs:
+﻿filebeat.inputs:
   - type: filestream
     id: test-logs-simple
     enabled: true
@@ -10,3 +10,4 @@ filebeat.inputs:
 
 output.logstash:
   hosts: ["127.0.0.1:5044"]
+

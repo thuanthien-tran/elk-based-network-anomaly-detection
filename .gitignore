@@ -17,10 +17,15 @@ build/
 *.h5
 *.pth
 
-# Data
+# Data (dataset nặng - không đẩy lên Git)
 *.csv
 *.json
 data/
+data/raw/
+data/processed/
+data/russellmitchell/
+data/training/
+data/models/
 datasets/
 
 # Logs

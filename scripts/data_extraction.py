@@ -10,66 +10,53 @@ import json
 import argparse
 import sys
 
-def connect_elasticsearch(host='localhost', port=9200, scheme='http'):
-    """Connect to Elasticsearch"""
-    # Force HTTP scheme explicitly to avoid HTTPS auto-detection
+def connect_elasticsearch(host='localhost', port=9200, scheme='http', retries=3, retry_delay=2):
+    """Connect to Elasticsearch with retries (robustness: transient failures)."""
+    import time
     url = f"{scheme}://{host}:{port}"
-    
     print(f"Connecting to Elasticsearch at {url}...")
-    
-    try:
-        # Force HTTP by using http:// URL prefix
-        # Using elasticsearch-py 8.x which is compatible with ES 8.x server
-        es = Elasticsearch([url], request_timeout=10)
-        
-        # Test connection
-        if not es.ping():
-            print(f"[ERROR] Cannot connect to Elasticsearch at {url}")
-            print("\nTroubleshooting:")
-            print("  1. Check if Elasticsearch is running")
-            print(f"     Test: curl http://{host}:{port}")
-            print("  2. Verify host and port are correct")
-            print("  3. Check firewall settings")
-            print("  4. If using Docker, ensure container is running")
-            raise Exception(f"Cannot connect to Elasticsearch at {url} - ping failed")
-        
-        print(f"[OK] Successfully connected to Elasticsearch at {url}")
-        
-        # Get cluster info
+    last_error = None
+    for attempt in range(1, retries + 1):
         try:
-            info = es.info()
-            print(f"  Cluster: {info.get('cluster_name', 'N/A')}")
-            print(f"  Version: {info.get('version', {}).get('number', 'N/A')}")
-        except:
-            pass
-        
-        return es
-        
-    except Exception as e:
-        error_msg = str(e)
-        if "Connection refused" in error_msg or "ping failed" in error_msg:
-            print(f"\n[ERROR] Cannot connect to Elasticsearch at {url}")
-            print("\nPossible causes:")
-            print("  1. Elasticsearch server is not running")
-            print("  2. Wrong host or port")
-            print("  3. Firewall blocking connection")
-            print("  4. Elasticsearch is running on different port")
-            print("\nTo test connection manually:")
-            print(f"  curl http://{host}:{port}")
-            print(f"  Or: python scripts/test_elasticsearch_connection.py {host} {port}")
-        raise Exception(f"Cannot connect to Elasticsearch at {url}: {error_msg}")
+            es = Elasticsearch([url], request_timeout=10)
+            if not es.ping():
+                raise Exception(f"Cannot connect to Elasticsearch at {url} - ping failed")
+            print(f"[OK] Successfully connected to Elasticsearch at {url}")
+            try:
+                info = es.info()
+                print(f"  Cluster: {info.get('cluster_name', 'N/A')}")
+                print(f"  Version: {info.get('version', {}).get('number', 'N/A')}")
+            except Exception:
+                pass
+            return es
+        except Exception as e:
+            last_error = e
+            if attempt < retries:
+                print(f"  Attempt {attempt}/{retries} failed: {e}. Retrying in {retry_delay}s...")
+                time.sleep(retry_delay)
+            else:
+                break
+    error_msg = str(last_error) if last_error else "unknown"
+    print(f"\n[ERROR] Cannot connect to Elasticsearch at {url} after {retries} attempts")
+    print("\nPossible causes:")
+    print("  1. Elasticsearch server is not running")
+    print("  2. Wrong host or port")
+    print("  3. Firewall blocking connection")
+    print(f"\nTo test: curl http://{host}:{port}")
+    raise Exception(f"Cannot connect to Elasticsearch at {url}: {error_msg}")
 
-def extract_logs(es, index_pattern, start_time, end_time, size=10000, batch_size=1000):
+def extract_logs(es, index_pattern, start_time, end_time, size=10000, batch_size=1000, max_total_docs=0):
     """
-    Extract logs from Elasticsearch with proper scroll handling
-    
+    Extract logs from Elasticsearch with proper scroll handling.
+
     Args:
         es: Elasticsearch client
         index_pattern: Index pattern to search
         start_time: Start time (ISO format)
         end_time: End time (ISO format)
-        size: Initial scroll size
-        batch_size: Batch size for processing to avoid memory issues
+        size: Initial scroll size per request
+        batch_size: Batch size for yielding to avoid memory issues
+        max_total_docs: Cap total documents (0 = no limit). Use e.g. 500000 to avoid OOM on large indices.
     """
     # Query for Elasticsearch 9.x (query structure)
     query_dict = {
@@ -96,16 +83,18 @@ def extract_logs(es, index_pattern, start_time, end_time, size=10000, batch_size
         
         # Process initial batch
         hits = response['hits']['hits']
+        total_so_far = 0
         while len(hits) > 0:
             for hit in hits:
                 logs.append(hit['_source'])
-            
-            # Process in batches to avoid memory issues
+                total_so_far += 1
+                if max_total_docs and total_so_far >= max_total_docs:
+                    break
+            if max_total_docs and total_so_far >= max_total_docs:
+                break
             if len(logs) >= batch_size:
                 yield logs
                 logs = []
-            
-            # Continue scrolling
             try:
                 response = es.scroll(scroll_id=scroll_id, scroll='2m')
                 scroll_id = response.get('_scroll_id')
@@ -176,10 +165,15 @@ def parse_ssh_message(message):
             source_ip = ip_match.group(1)
             break
     
-    # Extract user: "for user1" or "for invalid user admin"
+    # Extract user: "for user1", "for invalid user admin", "publickey for jhall from", "session opened for user X"
     user_patterns = [
-        r'for\s+(?:invalid\s+)?user\s+(\S+)',  # "for user1" or "for invalid user admin"
-        r'user\s+(\S+)',  # Fallback: "user hacker"
+        r'for\s+(?:invalid\s+)?user\s+(\S+)',   # "for invalid user admin" or "for user admin"
+        r'password for\s+(\S+)\s+from',         # "Accepted/Failed password for user1 from"
+        r'publickey for\s+(\S+)\s+from',       # "Accepted publickey for jhall from"
+        r'session opened for user\s+(\S+)',     # pam_unix(sshd:session): session opened for user jhall
+        r'session closed for user\s+(\S+)',
+        r'Successful su for\s+(\S+)\s+by',     # su[27950]: Successful su for jhall by www-data
+        r'user\s+(\S+)',                        # Fallback
     ]
     for pattern in user_patterns:
         user_match = re.search(pattern, message, re.IGNORECASE)
@@ -187,12 +181,15 @@ def parse_ssh_message(message):
             user = user_match.group(1)
             break
     
-    # Extract status: "Failed password" or "Accepted password"
+    # Extract status: "Failed password", "Accepted password", "Accepted publickey", session, su, sudo, etc.
     if 'failed password' in message.lower():
         status = 'failed'
         is_attack = True
         attack_type = 'brute_force'
     elif 'accepted password' in message.lower():
+        status = 'accepted'
+        is_attack = False
+    elif 'accepted publickey' in message.lower():
         status = 'accepted'
         is_attack = False
     elif 'authentication failure' in message.lower():
@@ -203,6 +200,21 @@ def parse_ssh_message(message):
         status = 'invalid_user'
         is_attack = True
         attack_type = 'brute_force'
+    elif 'session opened for user' in message.lower() or 'session closed for user' in message.lower():
+        status = 'session'
+        is_attack = False
+    elif 'successful su for' in message.lower() or 'su for' in message.lower():
+        status = 'su'
+        is_attack = False  # labels may override for attacker escalation
+    elif 'sudo:' in message.lower() or 'pam_unix(sudo:session)' in message.lower():
+        status = 'sudo'
+        is_attack = False
+    elif 'did not receive identification' in message.lower():
+        status = 'connection_refused'
+        is_attack = False
+    elif 'disconnected from' in message.lower() or 'received disconnect' in message.lower():
+        status = 'disconnect'
+        is_attack = False
     
     return source_ip, user, status, is_attack, attack_type
 
@@ -269,9 +281,11 @@ def parse_web_logs(logs):
         
         # Check if this is a web log
         if log_type == 'web' or 'web' in (log_type or '').lower():
+            clientip = log.get('clientip', '') or log.get('source', {}).get('ip', '')
             record = {
                 'timestamp': log.get('@timestamp'),
-                'clientip': log.get('clientip', '') or log.get('source', {}).get('ip', ''),
+                'source_ip': clientip,
+                'clientip': clientip,
                 'request': log.get('request', ''),
                 'response': log.get('response', ''),
                 'bytes': log.get('bytes', 0),
@@ -284,10 +298,11 @@ def parse_web_logs(logs):
             }
             data.append(record)
         elif 'http' in message.lower() or 'GET' in message or 'POST' in message:
-            # Fallback: if message contains HTTP keywords, treat as web log
+            clientip = log.get('clientip', '')
             record = {
                 'timestamp': log.get('@timestamp'),
-                'clientip': log.get('clientip', ''),
+                'source_ip': clientip,
+                'clientip': clientip,
                 'request': log.get('request', ''),
                 'response': log.get('response', ''),
                 'bytes': log.get('bytes', 0),
@@ -361,15 +376,29 @@ def main():
     parser = argparse.ArgumentParser(description='Extract logs from Elasticsearch')
     parser.add_argument('--host', default='localhost', help='Elasticsearch host')
     parser.add_argument('--port', type=int, default=9200, help='Elasticsearch port')
-    parser.add_argument('--index', required=True, help='Index pattern (e.g., ssh-logs-*)')
+    parser.add_argument('--index', default=None,
+                       help='Index pattern (e.g. ssh-logs-*, web-logs-*, test-logs-*). Default: ssh-logs-* for --log-type ssh, web-logs-* for web, required for all')
     parser.add_argument('--output', required=True, help='Output CSV file')
     parser.add_argument('--hours', type=int, default=24, help='Number of hours to extract')
-    parser.add_argument('--log-type', choices=['ssh', 'web', 'all'], default='all', 
-                       help='Type of logs to extract')
+    parser.add_argument('--max-docs', type=int, default=0, help='Max documents to extract (0=no limit; use e.g. 500000 to avoid OOM)')
+    parser.add_argument('--log-type', choices=['ssh', 'web', 'all'], default='all',
+                       help='Type of logs to extract (used for parsing and default index)')
     parser.add_argument('--skip-connection-check', action='store_true',
                        help='Skip Elasticsearch connection check (for testing)')
     
     args = parser.parse_args()
+    
+    # Default index by log-type (per DU_KIEN_DATASET: ssh-logs-*, web-logs-*)
+    index_pattern = args.index
+    if index_pattern is None:
+        if args.log_type == 'ssh':
+            index_pattern = 'ssh-logs-*'
+        elif args.log_type == 'web':
+            index_pattern = 'web-logs-*'
+        else:
+            print("[ERROR] --index is required when --log-type is 'all'. Example: --index test-logs-*")
+            sys.exit(1)
+    args.index = index_pattern
     
     # Connect to Elasticsearch (force HTTP scheme)
     try:
@@ -387,6 +416,20 @@ def main():
             print("  3. Or skip connection check: --skip-connection-check (for testing)")
             sys.exit(1)
     
+    # List indices matching pattern (help debug when 0 docs)
+    try:
+        matching = es.indices.get(index=args.index)
+        names = [k for k in (matching or {}) if not k.startswith('.')]
+        if names:
+            print(f"  Indices matching '{args.index}': {', '.join(sorted(names))}")
+        else:
+            cat = es.cat.indices(format="json")
+            existing = [x.get("index", "") for x in (cat or []) if x.get("index", "") and not x.get("index", "").startswith(".")]
+            print(f"  No indices match '{args.index}'. Existing: {', '.join(sorted(existing)[:25])}")
+            print("  => Chay [4] Filebeat va giu cua so mo, tao log [5]/[10], doi 15s roi thu lai.")
+    except Exception as e:
+        print(f"  (Kiem tra index: {e})")
+    
     # Calculate time range (use UTC to match Elasticsearch)
     end_time = datetime.now(timezone.utc)
     start_time = end_time - timedelta(hours=args.hours)
@@ -401,7 +444,7 @@ def main():
     # Extract logs in batches
     all_logs = []
     batch_count = 0
-    for batch_logs in extract_logs(es, args.index, start_time_iso, end_time_iso):
+    for batch_logs in extract_logs(es, args.index, start_time_iso, end_time_iso, max_total_docs=getattr(args, 'max_docs', 0)):
         all_logs.extend(batch_logs)
         batch_count += 1
         print(f"Processed batch {batch_count}, total logs: {len(all_logs)}")
@@ -444,9 +487,10 @@ def main():
             print(f"\nAttack detection: {df['is_attack'].sum()} attacks found")
     else:
         print("\nNo data extracted. Check:")
-        print("  1. Index pattern matches existing indices")
+        print("  1. Index pattern matches existing indices (thu: test-logs-* hoac ssh-logs-*)")
         print("  2. Time range contains logs")
-        print("  3. Logs match the specified log-type filter")
+        print("  3. Filebeat and Logstash are running; logs in C:\\Users\\...\\Documents\\test.log")
+        sys.exit(1)
 
 if __name__ == '__main__':
     main()

@@ -38,7 +38,7 @@ for /f "tokens=3" %%i in ('curl -s "http://127.0.0.1:9200/_cat/indices/ml-alerts
 echo [OK] ml-alerts-* indices deleted
 echo.
 
-echo [4/5] Verifying deletion...
+echo [4/6] Verifying deletion...
 timeout /t 2 /nobreak >nul
 curl -s http://127.0.0.1:9200/_cat/indices?v | findstr /i "test-logs ml-alerts"
 if %ERRORLEVEL% EQU 0 (
@@ -48,22 +48,28 @@ if %ERRORLEVEL% EQU 0 (
 )
 echo.
 
-echo [5/5] Cleaning old CSV files...
+echo [5/6] Cleaning old CSV files...
 if exist "data\raw\logs.csv" del /q "data\raw\logs.csv"
 if exist "data\processed\logs.csv" del /q "data\processed\logs.csv"
 if exist "data\predictions.csv" del /q "data\predictions.csv"
+if exist "data\processed\predictions_demo.csv" del /q "data\processed\predictions_demo.csv"
 if exist "data\processed\logs_with_ml.csv" del /q "data\processed\logs_with_ml.csv"
 echo [OK] CSV files cleaned
 echo.
 
-set /p del_model="Delete old ML model? (yes/no): "
+echo [6/6] ML model (data\models\*.joblib, ml_models\*.pkl)...
+set /p del_model="Xoa model cu de train lai tu dau? (yes/no): "
 if /i "%del_model%"=="yes" (
+    if exist "data\models\*.joblib" (
+        del /q "data\models\*.joblib"
+        echo [OK] data\models\*.joblib deleted
+    )
     if exist "ml_models\model.pkl" (
         del /q "ml_models\model.pkl"
-        echo [OK] ML model deleted
+        echo [OK] ml_models\model.pkl deleted
     )
 ) else (
-    echo [SKIP] ML model kept
+    echo [SKIP] Model giu nguyen (pipeline [6] se ghi de khi train lai)
 )
 echo.
 

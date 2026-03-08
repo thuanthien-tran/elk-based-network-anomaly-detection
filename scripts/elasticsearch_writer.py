@@ -6,64 +6,72 @@ Script to write ML detection results back to Elasticsearch
 from elasticsearch import Elasticsearch
 import pandas as pd
 import argparse
+import sys
 from datetime import datetime
 import json
 import hashlib
 
-def connect_elasticsearch(host='localhost', port=9200, scheme='http'):
-    """Connect to Elasticsearch"""
-    # Force HTTP scheme explicitly to avoid HTTPS auto-detection
+def connect_elasticsearch(host='localhost', port=9200, scheme='http', request_timeout=300, retries=3, retry_delay=2):
+    """Connect to Elasticsearch with retries. request_timeout=300 (5 phut) cho bulk index nhieu document."""
+    import time
     url = f"{scheme}://{host}:{port}"
-    try:
-        # Force HTTP by using http:// URL prefix
-        # Using elasticsearch-py 8.x which is compatible with ES 8.x server
-        es = Elasticsearch([url], request_timeout=30)
-        if es.ping():
-            print(f"Connected to Elasticsearch at {url}")
-            return es
-        else:
-            raise Exception("Cannot connect to Elasticsearch - ping failed")
-    except Exception as e:
-        raise Exception(f"Cannot connect to Elasticsearch: {e}")
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            es = Elasticsearch([url], request_timeout=request_timeout)
+            if es.ping():
+                print(f"Connected to Elasticsearch at {url}")
+                return es
+            raise Exception("Ping failed")
+        except Exception as e:
+            last_error = e
+            if attempt < retries:
+                print(f"  Attempt {attempt}/{retries} failed: {e}. Retrying in {retry_delay}s...")
+                time.sleep(retry_delay)
+    raise Exception(f"Cannot connect to Elasticsearch at {url}: {last_error}")
 
-def write_results(es, df, index_name='ml-alerts', refresh='wait_for', check_duplicates=True):
+def write_results(es, df, index_name='ml-alerts', refresh='wait_for', check_duplicates=True, model_name=None):
     """
     Write ML detection results to Elasticsearch
-    
+
     Args:
         es: Elasticsearch client
         df: DataFrame with results
         index_name: Base index name
         refresh: Refresh policy ('wait_for', 'false', 'true')
         check_duplicates: Check for duplicate documents
+        model_name: Ten model/pipeline de phan biet tren Kibana (vd: unified, russellmitchell, csv)
     """
+    df = df.copy()
+    if model_name is not None:
+        df['ml_model'] = model_name
     index_pattern = f"{index_name}-{datetime.now().strftime('%Y.%m.%d')}"
     
     # Create index if not exists
     if not es.indices.exists(index=index_pattern):
-        mapping = {
-            "mappings": {
-                "properties": {
-                    "@timestamp": {"type": "date"},
-                    "source_ip": {"type": "keyword"},  # Changed from "ip" to "keyword" to handle empty/invalid IPs
-                    "ml_anomaly": {"type": "boolean"},
-                    "ml_anomaly_score": {"type": "float"},
-                    "is_attack": {"type": "boolean"},
-                    "attack_type": {"type": "keyword"},
-                    "geoip": {
-                        "properties": {
-                            "country_name": {"type": "keyword"},
-                            "city_name": {"type": "keyword"}
-                        }
+        mappings = {
+            "properties": {
+                "@timestamp": {"type": "date"},
+                "source_ip": {"type": "keyword"},
+                "ml_anomaly": {"type": "boolean"},
+                "ml_anomaly_score": {"type": "float"},
+                "ml_model": {"type": "keyword"},
+                "is_attack": {"type": "boolean"},
+                "attack_type": {"type": "keyword"},
+                "defense_recommendations": {"type": "keyword"},
+                "geoip": {
+                    "properties": {
+                        "country_name": {"type": "keyword"},
+                        "city_name": {"type": "keyword"}
                     }
                 }
-            },
-            "settings": {
-                "refresh_interval": "30s"
             }
         }
-        # Elasticsearch 9.x uses body parameter
-        es.indices.create(index=index_pattern, body=mapping)
+        settings = {"refresh_interval": "30s"}
+        try:
+            es.indices.create(index=index_pattern, mappings=mappings, settings=settings)
+        except TypeError:
+            es.indices.create(index=index_pattern, body={"mappings": mappings, "settings": settings})
         print(f"Created index: {index_pattern}")
     else:
         # Check if mapping needs update (handle conflicts)
@@ -72,6 +80,16 @@ def write_results(es, df, index_name='ml-alerts', refresh='wait_for', check_dupl
             # If needed, update mapping dynamically
         except Exception as e:
             print(f"Warning: Could not check mapping: {e}")
+    
+    # Add defense recommendations by attack_type
+    try:
+        try:
+            from scripts.defense_recommendations import add_recommendations_to_dataframe
+        except ImportError:
+            from defense_recommendations import add_recommendations_to_dataframe
+        df = add_recommendations_to_dataframe(df.copy())
+    except Exception as e:
+        print(f"Warning: could not add defense_recommendations: {e}")
     
     # Convert DataFrame to documents
     documents = []
@@ -162,34 +180,51 @@ def write_results(es, df, index_name='ml-alerts', refresh='wait_for', check_dupl
     
     print(f"Prepared {len(documents)} documents for indexing")
     
-    # Bulk insert
-    from elasticsearch.helpers import bulk
-    
+    # Bulk insert with progress bar
+    from elasticsearch.helpers import streaming_bulk
+
+    total = len(documents)
+    chunk_size = 100
+    bar_width = 30
+
     def doc_generator():
-        for i, doc in enumerate(documents):
+        for doc in documents:
             action = {
                 "_index": index_pattern,
                 "_source": doc
             }
-            # Add document ID if checking duplicates
             if check_duplicates:
                 doc_id = f"{doc.get('@timestamp', '')}_{doc.get('source_ip', '')}_{doc.get('ml_anomaly_score', 0)}"
                 action["_id"] = hashlib.md5(doc_id.encode()).hexdigest()
             yield action
-    
-    success, failed = bulk(
-        es, 
-        doc_generator(), 
+
+    # Dung refresh='false' de tranh dung khi cho ES refresh (wait_for rat lau o chunk cuoi)
+    failed_list = []
+    for i, (ok, item) in enumerate(streaming_bulk(
+        es,
+        doc_generator(),
+        chunk_size=chunk_size,
         raise_on_error=False,
-        refresh=refresh
-    )
-    
+        refresh="false"
+    )):
+        if not ok and isinstance(item, dict) and "items" in item:
+            for x in item.get("items", []):
+                idx = x.get("index", {})
+                if idx.get("error"):
+                    failed_list.append(x)
+        current = min((i + 1) * chunk_size, total)
+        pct = (current * 100) // total
+        filled = (bar_width * current) // total if total else 0
+        bar = "#" * filled + "-" * (bar_width - filled)
+        print(f"\r  Dang ghi ES: [{bar}] {current}/{total} ({pct}%)", end="", flush=True)
+    print()
+    success = total - len(failed_list)
     print(f"Successfully indexed {success} documents")
-    if failed:
-        print(f"Failed to index {len(failed)} documents")
-        for item in failed[:5]:  # Print first 5 failures
+    print("  (Du lieu hien trong Kibana trong vai giay, hoac bam Refresh.)")
+    if failed_list:
+        print(f"Failed to index {len(failed_list)} documents")
+        for item in failed_list[:5]:
             print(f"  Error: {item.get('index', {}).get('error', {})}")
-    
     return index_pattern
 
 def main():
@@ -204,6 +239,8 @@ def main():
                        default='wait_for', help='Refresh policy')
     parser.add_argument('--no-check-duplicates', action='store_true',
                        help='Skip duplicate checking')
+    parser.add_argument('--model-name', default='', metavar='NAME',
+                       help='Ten model/pipeline (ghi vao truong ml_model de phan biet tren Kibana, vd: unified, russellmitchell, csv)')
     
     args = parser.parse_args()
     
@@ -215,6 +252,10 @@ def main():
     df = pd.read_csv(args.input)
     print(f"Loaded {len(df)} records")
     
+    # Them truong phan biet model/pipeline tren Kibana
+    if args.model_name:
+        df['ml_model'] = args.model_name
+    
     # Filter anomalies if requested
     if args.filter_anomalies and 'ml_anomaly' in df.columns:
         # Handle both int (0/1) and bool (True/False) formats
@@ -225,15 +266,21 @@ def main():
         print(f"Filtered to {len(df)} anomaly records")
     
     # Write to Elasticsearch
-    index_name = write_results(
-        es, 
-        df, 
-        args.index,
-        refresh=args.refresh,
-        check_duplicates=not args.no_check_duplicates
-    )
-    print(f"\nResults written to index: {index_name}")
-    print(f"You can view them in Kibana with index pattern: {args.index}-*")
+    try:
+        index_name = write_results(
+            es,
+            df,
+            args.index,
+            refresh=args.refresh,
+            check_duplicates=not args.no_check_duplicates
+        )
+        print(f"\nResults written to index: {index_name}")
+        print(f"You can view them in Kibana with index pattern: {args.index}-*")
+    except Exception as e:
+        print(f"\n[ERROR] Ghi Elasticsearch that bai: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
 if __name__ == '__main__':
     main()
