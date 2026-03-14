@@ -54,10 +54,11 @@ def main():
             desc="merge_training_datasets",
         )
         if not ok:
-            print("[LOI] Gop dataset that bai. Kiem tra da preprocess 3 nguon chua:")
+            print("[LOI] Gop dataset that bai. Can it nhat 1 trong cac file sau:")
             print("  - data/processed/logs.csv (Synthetic)")
             print("  - data/processed/russellmitchell_processed.csv")
-            print("  - data/processed/pipeline_ssh_processed.csv")
+            print("  - data/processed/pipeline_ssh_processed.csv (Kaggle)")
+            print("  - data/processed/custom_processed.csv (Custom, neu co)")
             return 1
     else:
         if not unified_path.exists():

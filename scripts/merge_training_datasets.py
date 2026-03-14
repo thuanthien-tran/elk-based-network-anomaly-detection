@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Gộp 3 dataset SSH (Synthetic, Russell Mitchell, Kaggle) đã qua preprocess
-thành unified training dataset. Chuẩn hóa cột (bỏ host, thêm geoip nếu thiếu).
+Gộp các dataset SSH đã preprocess (Synthetic, Russell Mitchell, Kaggle, Custom) thành unified training dataset.
+Chuẩn hóa cột (bỏ host, thêm geoip nếu thiếu). File nào tồn tại thì gộp, thiếu thì bỏ qua.
 SIEM + ML Hybrid - Offline Training Pipeline.
 """
 import argparse
@@ -46,13 +46,15 @@ def normalize_df(df):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Gộp 3 dataset SSH thành unified training dataset")
+    parser = argparse.ArgumentParser(description="Gộp các dataset SSH đã preprocess thành unified training dataset (Synthetic, Russell, Kaggle, Custom).")
     parser.add_argument("--synthetic", default=None,
                         help="CSV đã preprocess từ Synthetic (mặc định: data/processed/logs.csv)")
     parser.add_argument("--russell", default=None,
                         help="CSV đã preprocess từ Russell Mitchell (mặc định: data/processed/russellmitchell_processed.csv)")
     parser.add_argument("--kaggle", default=None,
                         help="CSV đã preprocess từ Kaggle (mặc định: data/processed/pipeline_ssh_processed.csv)")
+    parser.add_argument("--custom", default=None,
+                        help="CSV đã preprocess từ tệp tùy chọn (mặc định: data/processed/custom_processed.csv). Bỏ qua nếu không tồn tại.")
     parser.add_argument("--output", "-o", default=None,
                         help="Unified CSV (mặc định: data/training/unified_ssh_dataset.csv)")
     args = parser.parse_args()
@@ -61,6 +63,7 @@ def main():
     synthetic_path = Path(args.synthetic) if args.synthetic else root / "data" / "processed" / "logs.csv"
     russell_path = Path(args.russell) if args.russell else root / "data" / "processed" / "russellmitchell_processed.csv"
     kaggle_path = Path(args.kaggle) if args.kaggle else root / "data" / "processed" / "pipeline_ssh_processed.csv"
+    custom_path = Path(args.custom) if args.custom else root / "data" / "processed" / "custom_processed.csv"
     out_path = Path(args.output) if args.output else root / "data" / "training" / "unified_ssh_dataset.csv"
     if not out_path.is_absolute():
         out_path = root / out_path
@@ -69,10 +72,12 @@ def main():
     frames = []
     names = []
 
+    # Tất cả nguồn trong data/processed có thể dùng cho train: Synthetic, Russell, Kaggle, Custom (nếu có)
     for path, name in [
         (synthetic_path, "Synthetic"),
         (russell_path, "Russell Mitchell"),
         (kaggle_path, "Kaggle"),
+        (custom_path, "Custom"),
     ]:
         if not path.exists():
             print(f"[SKIP] Khong tim thay: {path} ({name})")
@@ -102,6 +107,8 @@ def main():
     n_attack = unified["is_attack"].sum() if "is_attack" in unified.columns else 0
     print(f"\nDa gop {len(unified)} dong -> {out_path}")
     print(f"  Normal: {len(unified) - n_attack}, Attack: {n_attack}")
+    # Log ro nhung dataset da duoc dua vao unified
+    print("  Nguon dataset dung trong unified:", ", ".join(names))
     return 0
 
 

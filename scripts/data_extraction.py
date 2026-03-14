@@ -4,6 +4,7 @@ Script to extract logs from Elasticsearch for ML processing
 """
 
 from elasticsearch import Elasticsearch
+import elasticsearch as _es_pkg
 from datetime import datetime, timedelta, timezone
 import pandas as pd
 import json
@@ -16,14 +17,23 @@ def connect_elasticsearch(host='localhost', port=9200, scheme='http', retries=3,
     url = f"{scheme}://{host}:{port}"
     print(f"Connecting to Elasticsearch at {url}...")
     last_error = None
+    major = 0
+    try:
+        major = int(getattr(_es_pkg, "__version__", (0,))[0])
+    except Exception:
+        major = 0
+    if major >= 9:
+        raise RuntimeError(
+            "Ban dang dung elasticsearch-py v9 (khong tuong thich voi Elasticsearch 8.x).\n"
+            "Fix (khuyen nghi): py -3 -m pip uninstall -y elasticsearch && py -3 -m pip install \"elasticsearch>=8,<9\""
+        )
     for attempt in range(1, retries + 1):
         try:
             es = Elasticsearch([url], request_timeout=10)
-            if not es.ping():
-                raise Exception(f"Cannot connect to Elasticsearch at {url} - ping failed")
+            # Use info() instead of ping() for better compatibility
+            info = es.info()
             print(f"[OK] Successfully connected to Elasticsearch at {url}")
             try:
-                info = es.info()
                 print(f"  Cluster: {info.get('cluster_name', 'N/A')}")
                 print(f"  Version: {info.get('version', {}).get('number', 'N/A')}")
             except Exception:

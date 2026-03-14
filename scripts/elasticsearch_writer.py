@@ -4,10 +4,12 @@ Script to write ML detection results back to Elasticsearch
 """
 
 from elasticsearch import Elasticsearch
+import elasticsearch as _es_pkg
 import pandas as pd
 import argparse
 import sys
 from datetime import datetime
+import uuid
 import json
 import hashlib
 
@@ -16,13 +18,22 @@ def connect_elasticsearch(host='localhost', port=9200, scheme='http', request_ti
     import time
     url = f"{scheme}://{host}:{port}"
     last_error = None
+    major = 0
+    try:
+        major = int(getattr(_es_pkg, "__version__", (0,))[0])
+    except Exception:
+        major = 0
+    if major >= 9:
+        raise RuntimeError(
+            "Ban dang dung elasticsearch-py v9 (khong tuong thich voi Elasticsearch 8.x).\n"
+            "Fix (khuyen nghi): py -3 -m pip uninstall -y elasticsearch && py -3 -m pip install \"elasticsearch>=8,<9\""
+        )
     for attempt in range(1, retries + 1):
         try:
             es = Elasticsearch([url], request_timeout=request_timeout)
-            if es.ping():
-                print(f"Connected to Elasticsearch at {url}")
-                return es
-            raise Exception("Ping failed")
+            es.info()
+            print(f"Connected to Elasticsearch at {url}")
+            return es
         except Exception as e:
             last_error = e
             if attempt < retries:
@@ -30,7 +41,7 @@ def connect_elasticsearch(host='localhost', port=9200, scheme='http', request_ti
                 time.sleep(retry_delay)
     raise Exception(f"Cannot connect to Elasticsearch at {url}: {last_error}")
 
-def write_results(es, df, index_name='ml-alerts', refresh='wait_for', check_duplicates=True, model_name=None):
+def write_results(es, df, index_name='ml-alerts', refresh='wait_for', check_duplicates=True, model_name=None, run_id=None):
     """
     Write ML detection results to Elasticsearch
 
@@ -45,7 +56,10 @@ def write_results(es, df, index_name='ml-alerts', refresh='wait_for', check_dupl
     df = df.copy()
     if model_name is not None:
         df['ml_model'] = model_name
-    index_pattern = f"{index_name}-{datetime.now().strftime('%Y.%m.%d')}"
+    # Each run -> separate index to avoid overwriting/mixing data.
+    # Example: ml-alerts-2026.03.10-142233-a1b2c3
+    run_id = (run_id or "").strip() or datetime.now().strftime("%H%M%S") + "-" + uuid.uuid4().hex[:6]
+    index_pattern = f"{index_name}-{datetime.now().strftime('%Y.%m.%d')}-{run_id}"
     
     # Create index if not exists
     if not es.indices.exists(index=index_pattern):
@@ -241,6 +255,8 @@ def main():
                        help='Skip duplicate checking')
     parser.add_argument('--model-name', default='', metavar='NAME',
                        help='Ten model/pipeline (ghi vao truong ml_model de phan biet tren Kibana, vd: unified, russellmitchell, csv)')
+    parser.add_argument('--run-id', default='', metavar='ID',
+                       help='Run identifier (tao index rieng moi lan ghi). Neu bo trong se tu tao theo gio + random.')
     
     args = parser.parse_args()
     
@@ -272,7 +288,8 @@ def main():
             df,
             args.index,
             refresh=args.refresh,
-            check_duplicates=not args.no_check_duplicates
+            check_duplicates=not args.no_check_duplicates,
+            run_id=args.run_id,
         )
         print(f"\nResults written to index: {index_name}")
         print(f"You can view them in Kibana with index pattern: {args.index}-*")

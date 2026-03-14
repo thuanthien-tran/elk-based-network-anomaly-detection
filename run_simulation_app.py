@@ -39,7 +39,7 @@ try:
         QSizePolicy,
     )
     from PySide6.QtCore import Qt, QTimer, Signal
-    from PySide6.QtGui import QColor, QPainter
+    from PySide6.QtGui import QColor, QFont, QPainter
     HAS_QT = True
     try:
         from PySide6.QtCharts import (
@@ -63,8 +63,23 @@ if not HAS_QT:
 def run_cmd(args, cwd=None, timeout=600):
     cwd = cwd or str(ROOT)
     try:
+        base = [sys.executable] + list(args)
+        # On Windows, prefer "py -3" to avoid mixing Python envs
+        if sys.platform == "win32":
+            try:
+                rtest = subprocess.run(
+                    ["py", "-3", "-c", "import sys; print(sys.executable)"],
+                    cwd=cwd,
+                    timeout=5,
+                    capture_output=True,
+                    text=True,
+                )
+                if rtest.returncode == 0:
+                    base = ["py", "-3"] + list(args)
+            except Exception:
+                pass
         r = subprocess.run(
-            [sys.executable] + list(args),
+            base,
             cwd=cwd,
             timeout=timeout,
             capture_output=True,
@@ -102,6 +117,19 @@ def run_cmd_shell(shell_cmd, cwd=None, timeout=600):
 def run_cmd_stream(args, cwd, timeout, queue_put):
     cwd = cwd or str(ROOT)
     cmd = [sys.executable] + list(args)
+    if sys.platform == "win32":
+        try:
+            rtest = subprocess.run(
+                ["py", "-3", "-c", "import sys; print(sys.executable)"],
+                cwd=cwd,
+                timeout=5,
+                capture_output=True,
+                text=True,
+            )
+            if rtest.returncode == 0:
+                cmd = ["py", "-3"] + list(args)
+        except Exception:
+            pass
     proc = None
     try:
         env = os.environ.copy()
@@ -132,8 +160,58 @@ def run_cmd_stream(args, cwd, timeout, queue_put):
         return False
 
 
+def _parse_timestamp(ts_str):
+    """Parse timestamp string; thử nhiều format (kể cả ISO với Z). Trả về datetime hoặc None."""
+    if not ts_str or not isinstance(ts_str, str):
+        return None
+    s = ts_str.strip().rstrip("Zz")[:26]
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%d %H:%M:%S.%f"):
+        base_fmt = fmt.replace(".%f", "")
+        try:
+            return datetime.strptime(s[:len(base_fmt)], base_fmt)
+        except Exception:
+            pass
+    return None
+
+
+def _is_attack_row(row, attack_keys=("is_attack", "ml_anomaly", "prediction", "is_attack_pred")):
+    """Kiểm tra một dòng CSV có được coi là tấn công (true/1/yes)."""
+    for key in attack_keys:
+        v = str(row.get(key, "")).strip().lower()
+        if v in ("true", "1", "yes"):
+            return True
+    return False
+
+
+def _add_hourly_from_csv(csv_path, hour_counts, now, only_attacks=True, attack_keys=("is_attack", "ml_anomaly", "prediction", "is_attack_pred"), ts_keys=("timestamp", "Timestamp", "@timestamp")):
+    """Đọc CSV, đếm số bản ghi 'tấn công' theo giờ trong 24h qua; cộng vào hour_counts."""
+    if not csv_path or not Path(csv_path).exists():
+        return
+    try:
+        with open(csv_path, "r", encoding="utf-8", errors="replace") as f:
+            reader = csv.DictReader(f)
+            if not reader.fieldnames:
+                return
+            for row in reader:
+                if only_attacks and not _is_attack_row(row, attack_keys):
+                    continue
+                ts = None
+                for k in ts_keys:
+                    ts = _parse_timestamp(row.get(k, ""))
+                    if ts is not None:
+                        break
+                if ts is None:
+                    continue
+                delta = now - ts
+                if timedelta(0) <= delta <= timedelta(hours=24):
+                    hour_key = ts.replace(minute=0, second=0, microsecond=0)
+                    hour_counts[hour_key] += 1
+    except Exception:
+        pass
+
+
 def load_stats_from_csv():
-    """Đọc thống kê từ data/processed/logs.csv. Trả về dict: logs_count, attacks_count, accuracy, top_ip, top_ip_count_5m, attack_today, attack_5min, hourly_attacks (24 giá trị)."""
+    """Đọc thống kê từ data/processed/logs.csv và các file predictions. Trả về dict: logs_count, attacks_count, accuracy, top_ip, top_ip_count_5m, attack_today, attack_5min, hourly_attacks, ingestion_rate, alert_rate, model_version, dataset_version."""
     csv_path = ROOT / "data" / "processed" / "logs.csv"
     out = {
         "logs_count": 0,
@@ -144,53 +222,102 @@ def load_stats_from_csv():
         "attack_today": 0,
         "attack_5min": 0,
         "hourly_attacks": [0] * 24,
+        "ingestion_rate": None,   # logs/min (last hour)
+        "alert_rate": None,       # alerts/hour (last hour)
+        "model_version": None,
+        "dataset_version": None,
     }
-    if not csv_path.exists():
-        return out
-    try:
-        now = datetime.now()
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        cutoff_5m = now - timedelta(minutes=5)
-        attack_counts_by_ip = defaultdict(int)
-        attack_counts_by_ip_5m = defaultdict(int)
-        hour_counts = defaultdict(int)
-        with open(csv_path, "r", encoding="utf-8", errors="replace") as f:
-            reader = csv.DictReader(f)
-            if not reader.fieldnames:
-                return out
-            for row in reader:
-                out["logs_count"] += 1
-                is_attack = str(row.get("is_attack", "")).strip().lower() == "true"
-                if is_attack:
-                    out["attacks_count"] += 1
-                    src = (row.get("source_ip") or "").strip()
-                    if src:
-                        attack_counts_by_ip[src] += 1
-                ts_str = (row.get("timestamp") or "").strip()
-                if ts_str:
-                    try:
-                        ts = datetime.strptime(ts_str[:19], "%Y-%m-%d %H:%M:%S")
+    now = datetime.now()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    cutoff_5m = now - timedelta(minutes=5)
+    attack_counts_by_ip = defaultdict(int)
+    attack_counts_by_ip_5m = defaultdict(int)
+    hour_counts = defaultdict(int)
+
+    if csv_path.exists():
+        try:
+            with open(csv_path, "r", encoding="utf-8", errors="replace") as f:
+                reader = csv.DictReader(f)
+                if reader.fieldnames:
+                    for row in reader:
+                        out["logs_count"] += 1
+                        is_attack = _is_attack_row(row, ("is_attack",))
                         if is_attack:
-                            if ts >= today_start:
-                                out["attack_today"] += 1
-                            if ts >= cutoff_5m:
-                                out["attack_5min"] += 1
-                                if src:
-                                    attack_counts_by_ip_5m[src] += 1
-                            delta = now - ts
-                            if timedelta(0) <= delta <= timedelta(hours=24):
-                                hour_key = ts.replace(minute=0, second=0, microsecond=0)
-                                hour_counts[hour_key] += 1
-                    except Exception:
-                        pass
-        if attack_counts_by_ip:
-            out["top_ip"] = max(attack_counts_by_ip, key=attack_counts_by_ip.get)
-        if attack_counts_by_ip_5m:
-            top = max(attack_counts_by_ip_5m, key=attack_counts_by_ip_5m.get)
-            out["top_ip_count_5m"] = attack_counts_by_ip_5m[top]
-        for i in range(24):
-            t = (now - timedelta(hours=23 - i)).replace(minute=0, second=0, microsecond=0)
-            out["hourly_attacks"][i] = hour_counts.get(t, 0)
+                            out["attacks_count"] += 1
+                            src = (row.get("source_ip") or "").strip()
+                            if src:
+                                attack_counts_by_ip[src] += 1
+                        ts = _parse_timestamp(row.get("timestamp") or row.get("Timestamp") or "")
+                        if ts is not None:
+                            if is_attack:
+                                if ts >= today_start:
+                                    out["attack_today"] += 1
+                                if ts >= cutoff_5m:
+                                    out["attack_5min"] += 1
+                                    if src:
+                                        attack_counts_by_ip_5m[src] += 1
+                                delta = now - ts
+                                if timedelta(0) <= delta <= timedelta(hours=24):
+                                    hour_key = ts.replace(minute=0, second=0, microsecond=0)
+                                    hour_counts[hour_key] += 1
+            if attack_counts_by_ip:
+                out["top_ip"] = max(attack_counts_by_ip, key=attack_counts_by_ip.get)
+            if attack_counts_by_ip_5m:
+                top = max(attack_counts_by_ip_5m, key=attack_counts_by_ip_5m.get)
+                out["top_ip_count_5m"] = attack_counts_by_ip_5m[top]
+        except Exception:
+            pass
+
+    # Gộp thêm từ file predictions (sau khi chạy Detection) để timeline có dữ liệu
+    seen = set()
+    for name in ["predictions.csv", "russellmitchell_predictions.csv", "custom_predictions.csv"]:
+        for base in (ROOT / "data" / "processed", ROOT / "data"):
+            p = base / name
+            if p.exists() and str(p) not in seen:
+                seen.add(str(p))
+                _add_hourly_from_csv(p, hour_counts, now, only_attacks=True, attack_keys=("ml_anomaly", "prediction", "is_attack_pred", "is_attack"))
+                break
+
+    for i in range(24):
+        t = (now - timedelta(hours=23 - i)).replace(minute=0, second=0, microsecond=0)
+        out["hourly_attacks"][i] = hour_counts.get(t, 0)
+
+    # Log ingestion rate (logs/min, last hour) và alert rate (alerts/hour, last hour)
+    cutoff_1h = now - timedelta(hours=1)
+    logs_1h = attacks_1h = 0
+    if csv_path.exists():
+        try:
+            with open(csv_path, "r", encoding="utf-8", errors="replace") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    ts = _parse_timestamp(row.get("timestamp") or row.get("Timestamp") or "")
+                    if ts and ts >= cutoff_1h:
+                        logs_1h += 1
+                        if _is_attack_row(row):
+                            attacks_1h += 1
+            if logs_1h >= 0:
+                out["ingestion_rate"] = round(logs_1h / 60.0, 1) if logs_1h else 0
+            out["alert_rate"] = attacks_1h
+        except Exception:
+            pass
+
+    # Model version (từ file model hoặc mtime)
+    model_path = ROOT / "data" / "models" / "ssh_attack_model.joblib"
+    if model_path.exists():
+        try:
+            mtime = model_path.stat().st_mtime
+            out["model_version"] = "v1.0." + datetime.fromtimestamp(mtime).strftime("%y%m%d")
+        except Exception:
+            out["model_version"] = "v1.0"
+    # Dataset version (processed logs)
+    if csv_path.exists():
+        try:
+            mtime = csv_path.stat().st_mtime
+            out["dataset_version"] = "processed." + datetime.fromtimestamp(mtime).strftime("%y%m%d")
+        except Exception:
+            out["dataset_version"] = "processed"
+
+    try:
         for name in ["russellmitchell_predictions.csv", "custom_predictions.csv", "predictions.csv"]:
             p = ROOT / "data" / "processed" / name
             if not p.exists():
@@ -424,6 +551,18 @@ if HAS_QT:
                 stats_row.addWidget(l)
             stats_row.addStretch()
             main_layout.addLayout(stats_row)
+            # 3b) Platform metrics: Log ingestion rate, Alert rate, Model version, Dataset version
+            stats_row2 = QHBoxLayout()
+            stats_row2.setSpacing(12)
+            self.lbl_ingestion_rate = QLabel("Log ingestion rate: —")
+            self.lbl_alert_rate = QLabel("Alert rate: —")
+            self.lbl_model_ver = QLabel("Model version: —")
+            self.lbl_dataset_ver = QLabel("Dataset version: —")
+            for l in (self.lbl_ingestion_rate, self.lbl_alert_rate, self.lbl_model_ver, self.lbl_dataset_ver):
+                l.setStyleSheet(f"color: {_TEXT_MUTED}; font-size: 10px;")
+                stats_row2.addWidget(l)
+            stats_row2.addStretch()
+            main_layout.addLayout(stats_row2)
 
             _CARD_STYLE = f"QFrame#card {{ background-color: {_BG_CARD}; border: 1px solid {_BORDER}; border-radius: {_CARD_RADIUS}px; }}"
 
@@ -492,8 +631,8 @@ if HAS_QT:
             term_title.setStyleSheet(f"font-weight: bold; font-size: 11px; color: {_TEXT};")
             term_inner.addWidget(term_title)
             workflow_lbl = QLabel(
-                "Workflow: System Setup → Dataset & Training → Detection Pipeline → Monitoring. "
-                "Chọn thao tác ở bảng điều khiển rồi bấm Execute Selected Task. Kết quả hiển thị bên dưới."
+                "ELKShield Unified Security Platform — Bấm ▶ Start Security Workflow (hoặc chọn thao tác rồi bấm). "
+                "Luồng: Check ELK → Load Model → Collect Logs → Feature Extraction → ML Detection → Write Alert ES → Suggest Defense → Dashboard."
             )
             workflow_lbl.setStyleSheet(f"color: {_TEXT_MUTED}; font-size: 10px;")
             workflow_lbl.setWordWrap(True)
@@ -514,7 +653,7 @@ if HAS_QT:
             self.txt = QPlainTextEdit()
             self.txt.setReadOnly(True)
             self.txt.setPlainText(
-                "Chọn thao tác (bấm nút ở 4 cột bên dưới) rồi bấm Thực thi tác vụ đã chọn. Kết quả hiển thị ở đây."
+                "Chọn thao tác (bấm nút ở 4 cột bên dưới) rồi bấm ▶ Start Security Workflow. Kết quả hiển thị ở đây."
             )
             term_inner.addWidget(self.txt)
             top_row.addWidget(term_card, 2)
@@ -562,49 +701,86 @@ if HAS_QT:
 
             four_cols = QHBoxLayout()
             four_cols.setSpacing(_CARD_GAP)
-            four_cols.addWidget(add_card("⚙", "System Setup", _COLOR_SETUP, [
-                ("Reset System", "1. Reset dữ liệu (xóa index)"),
-                ("Start Filebeat", "2. Mở Filebeat (cửa sổ mới)"),
-                ("Open Kibana", "3. Mở Kibana"),
+            four_cols.addWidget(add_card("🟢", "System Control", _COLOR_SETUP, [
+                ("Start SIEM", "14. Start Monitoring"),
+                ("Stop SIEM", "1. Reset dữ liệu (xóa index)"),
+                ("Restart pipeline", "2. Mở Filebeat (cửa sổ mới)"),
+                ("Sync model", "15. Sync model"),
             ]))
-            four_cols.addWidget(add_card("🧠", "Dataset & Training", _COLOR_TRAINING, [
-                ("Train Unified Model", "6.1 Train UNIFIED (gộp dataset)"),
-                ("Synthetic Dataset", "6.2 Chuẩn bị Synthetic (~8000 dòng)"),
-                ("Russell Dataset", "6.3 Train Russell Mitchell"),
-                ("Train from CSV", "6.4 Train từ CSV (A/B/C)"),
+            four_cols.addWidget(add_card("🧠", "Model Lab", _COLOR_TRAINING, [
+                ("Train Global Model", "6.1 Train UNIFIED (gộp dataset)"),
+                ("Train Scenario Model", "6.2 Chuẩn bị & Train (Synthetic / Russell)"),
+                ("Evaluate Model", "6.4 Train từ CSV (Kaggle / tệp)"),
+                ("Model Explainability", "17. Model Explainability"),
             ]))
             four_cols.addWidget(add_card("🔍", "Detection Pipeline", _COLOR_DETECTION, [
                 ("Run Detection", "7. Detection online (→ ml-alerts)"),
-                ("Quick Run", "9. Chạy nhanh: log → pipeline → Kibana"),
-                ("Demo Mode", "8. Demo nhanh (chỉ Python)"),
             ]))
-            four_cols.addWidget(add_card("📊", "Monitoring", _COLOR_MONITORING, [
-                ("Open Kibana Dashboard", "3. Mở Kibana"),
-                ("View Alerts", "10. View Alerts"),
-                ("System Status", "11. System Status"),
-                ("Stack Management", "12. Stack Management"),
+            four_cols.addWidget(add_card("🔴", "Threat Intelligence", _COLOR_MONITORING, [
+                ("SOC Dashboard", "3. Mở Kibana"),
+                ("Alert Feed", "10. View Alerts"),
+                ("Attack Analysis", "11. System Status"),
+                ("Defense Strategy", "13. Xem đề xuất phòng thủ"),
             ]))
             main_layout.addLayout(four_cols)
 
             # 6) Thanh dưới: Execute button (trái) + Log mẫu (phải)
             bottom_bar = QHBoxLayout()
             bottom_bar.setSpacing(12)
-            self.btn_run = QPushButton("  ▶  Execute Selected Task  ")
+            self.btn_run = QPushButton("  ▶  Start Security Workflow  ")
             self.btn_run.setObjectName("runBtn")
             self.btn_run.setFixedHeight(_BTN_HEIGHT)
             self.btn_run.setMinimumWidth(220)
             self.btn_run.clicked.connect(self._on_run_qt)
             bottom_bar.addWidget(self.btn_run)
 
+            self.frame_training_src = QWidget()
+            training_src_layout = QVBoxLayout(self.frame_training_src)
+            training_src_layout.setContentsMargins(0, 0, 0, 0)
+            row1 = QHBoxLayout()
+            row1.addWidget(QLabel("Nguồn:"))
+            self.training_src_group = QButtonGroup()
+            for lab, val in [
+                ("Synthetic (~8000 dòng)", "synthetic"),
+                ("Russell Mitchell", "russell"),
+                ("Kaggle (ssh_anomaly_dataset)", "kaggle"),
+                ("Custom (tệp CSV)", "custom"),
+            ]:
+                rb = QRadioButton(lab)
+                rb.setProperty("value", val)
+                if val == "synthetic":
+                    rb.setChecked(True)
+                rb.toggled.connect(self._on_scenario_src_toggled)
+                self.training_src_group.addButton(rb)
+                row1.addWidget(rb)
+            row1.addStretch()
+            training_src_layout.addLayout(row1)
+            self.frame_scenario_custom = QWidget()
+            custom_row_layout = QHBoxLayout(self.frame_scenario_custom)
+            custom_row_layout.setContentsMargins(0, 4, 0, 0)
+            custom_row_layout.addWidget(QLabel("Tệp Custom:"))
+            self.entry_scenario_custom = QLineEdit()
+            self.entry_scenario_custom.setPlaceholderText("data/raw/my.csv hoặc đường dẫn CSV")
+            self.entry_scenario_custom.setMinimumWidth(200)
+            custom_row_layout.addWidget(self.entry_scenario_custom)
+            self.write_es_scenario_cb = QCheckBox("Ghi ES sau train")
+            self.write_es_scenario_cb.setChecked(True)
+            custom_row_layout.addWidget(self.write_es_scenario_cb)
+            custom_row_layout.addStretch()
+            training_src_layout.addWidget(self.frame_scenario_custom)
+            self.frame_scenario_custom.hide()
+            bottom_bar.addWidget(self.frame_training_src)
+            self.frame_training_src.hide()
+
             self.frame_csv = QWidget()
             csv_layout = QHBoxLayout(self.frame_csv)
             csv_layout.setContentsMargins(0, 0, 0, 0)
-            csv_layout.addWidget(QLabel("Tệp CSV:"))
+            csv_layout.addWidget(QLabel("CSV:"))
             self.csv_group = QButtonGroup()
-            for lab, val in [("A - Russell", "A"), ("B - Kaggle", "B"), ("C - Tệp", "C")]:
+            for lab, val in [("Kaggle (ssh_anomaly_dataset)", "B"), ("Tệp (đường dẫn)", "C")]:
                 rb = QRadioButton(lab)
                 rb.setProperty("value", val)
-                if val == "A":
+                if val == "B":
                     rb.setChecked(True)
                 self.csv_group.addButton(rb)
                 csv_layout.addWidget(rb)
@@ -627,33 +803,55 @@ if HAS_QT:
             bottom_bar.addWidget(self.frame_reset_opts)
             self.frame_reset_opts.hide()
 
+            # Mặc định chọn Start SIEM để demo chỉ cần bấm "Start Security Workflow"
+            self._select_action_qt("14. Start Monitoring")
+
             bottom_bar.addStretch()
             log_row = QHBoxLayout()
-            log_row.addWidget(QLabel("Log mẫu:"))
-            self.spin_normal = QLineEdit()
-            self.spin_normal.setFixedWidth(40)
-            self.spin_normal.setText("2")
-            log_row.addWidget(self.spin_normal)
-            log_row.addWidget(QLabel("normal,"))
-            self.spin_attack = QLineEdit()
-            self.spin_attack.setFixedWidth(40)
-            self.spin_attack.setText("5")
-            log_row.addWidget(self.spin_attack)
-            log_row.addWidget(QLabel("attack"))
-            btn_log = QPushButton("Ghi test.log")
-            btn_log.setFixedHeight(_BTN_HEIGHT)
-            btn_log.setStyleSheet(
+            log_row.setSpacing(6)
+            self.btn_toggle_log = QPushButton("Ghi log")
+            self.btn_toggle_log.setFixedHeight(_BTN_HEIGHT)
+            self.btn_toggle_log.setFixedWidth(70)
+            self.btn_toggle_log.setStyleSheet(
                 f"QPushButton {{ background-color: {_BORDER}; color: {_TEXT}; border: 1px solid {_TEXT_MUTED}; "
                 f"border-radius: {_BTN_RADIUS}px; }} QPushButton:hover {{ background-color: {_TEXT_MUTED}; color: {_BG_DARK}; }}"
             )
-            btn_log.clicked.connect(self._on_write_log_qt)
-            log_row.addWidget(btn_log)
-            log_row.addSpacing(12)
-            self.lbl_testlog_status = QLabel("test.log: —")
+            self.btn_toggle_log.clicked.connect(self._toggle_log_panel_qt)
+            log_row.addWidget(self.btn_toggle_log)
+
+            # Panel nhập số dòng (ẩn mặc định)
+            self.frame_log_panel = QWidget()
+            panel = QHBoxLayout(self.frame_log_panel)
+            panel.setContentsMargins(0, 0, 0, 0)
+            panel.setSpacing(6)
+            panel.addWidget(QLabel("Normal:"))
+            self.spin_normal = QLineEdit()
+            self.spin_normal.setFixedWidth(40)
+            self.spin_normal.setText("2")
+            panel.addWidget(self.spin_normal)
+            panel.addWidget(QLabel("Attack:"))
+            self.spin_attack = QLineEdit()
+            self.spin_attack.setFixedWidth(40)
+            self.spin_attack.setText("5")
+            panel.addWidget(self.spin_attack)
+            self.btn_do_write = QPushButton("Ghi log")
+            self.btn_do_write.setFixedHeight(_BTN_HEIGHT)
+            self.btn_do_write.setFixedWidth(70)
+            self.btn_do_write.setStyleSheet(
+                f"QPushButton {{ background-color: {_BORDER}; color: {_TEXT}; border: 1px solid {_TEXT_MUTED}; "
+                f"border-radius: {_BTN_RADIUS}px; }} QPushButton:hover {{ background-color: {_TEXT_MUTED}; color: {_BG_DARK}; }}"
+            )
+            self.btn_do_write.clicked.connect(self._on_write_log_qt)
+            panel.addWidget(self.btn_do_write)
+            self.frame_log_panel.setVisible(False)
+            log_row.addWidget(self.frame_log_panel)
+
+            self.lbl_testlog_status = QLabel("—")
             self.lbl_testlog_status.setStyleSheet(f"color: {_TEXT_MUTED}; font-size: 10px;")
             log_row.addWidget(self.lbl_testlog_status)
-            self.btn_open_testlog = QPushButton("Mở test.log")
+            self.btn_open_testlog = QPushButton("Mở log")
             self.btn_open_testlog.setFixedHeight(_BTN_HEIGHT)
+            self.btn_open_testlog.setFixedWidth(70)
             self.btn_open_testlog.setStyleSheet(
                 f"QPushButton {{ background-color: {_BORDER}; color: {_TEXT}; border: 1px solid {_TEXT_MUTED}; "
                 f"border-radius: {_BTN_RADIUS}px; font-size: 10px; }} QPushButton:hover {{ background-color: {_TEXT_MUTED}; color: {_BG_DARK}; }}"
@@ -676,14 +874,28 @@ if HAS_QT:
             if p.exists():
                 try:
                     size = p.stat().st_size
-                    self.lbl_testlog_status.setText(f"test.log: Đã có ({size} bytes)")
+                    kb = max(1, int(round(size / 1024.0)))
+                    self.lbl_testlog_status.setText(f"✓ {kb}KB")
                     self.lbl_testlog_status.setToolTip(str(p))
                 except Exception:
-                    self.lbl_testlog_status.setText("test.log: Đã có")
+                    self.lbl_testlog_status.setText("✓")
                     self.lbl_testlog_status.setToolTip(str(p))
             else:
-                self.lbl_testlog_status.setText("test.log: Chưa có")
+                self.lbl_testlog_status.setText("—")
                 self.lbl_testlog_status.setToolTip(str(p))
+
+        def _toggle_log_panel_qt(self):
+            try:
+                visible = not self.frame_log_panel.isVisible()
+                self.frame_log_panel.setVisible(visible)
+                if visible:
+                    self.btn_toggle_log.setText("Hủy")
+                    self.spin_normal.setFocus()
+                    self.spin_normal.selectAll()
+                else:
+                    self.btn_toggle_log.setText("Ghi log")
+            except Exception:
+                pass
 
         def _on_open_testlog_qt(self):
             p = get_testlog_path()
@@ -744,6 +956,12 @@ if HAS_QT:
                 self.lbl_attacks.setText("Tấn công phát hiện: " + str(stats.get("attacks_count", 0)))
                 self.lbl_accuracy.setText("Độ chính xác: " + (f"{acc}%" if acc is not None else "—"))
                 self.lbl_topip.setText("IP tấn công: " + (stats.get("top_ip") or "—") + "  (5 phút: " + str(stats.get("attack_5min", 0)) + ")")
+                ir = stats.get("ingestion_rate")
+                self.lbl_ingestion_rate.setText("Log ingestion rate: " + (f"{ir} logs/min" if ir is not None else "—"))
+                ar = stats.get("alert_rate")
+                self.lbl_alert_rate.setText("Alert rate: " + (f"{ar} alerts/h" if ar is not None else "—"))
+                self.lbl_model_ver.setText("Model version: " + (stats.get("model_version") or "—"))
+                self.lbl_dataset_ver.setText("Dataset version: " + (stats.get("dataset_version") or "—"))
                 hourly = stats.get("hourly_attacks") or [0] * 24
                 if HAS_QTCHARTS and self.chart_container:
                     self._build_chart_qt(hourly)
@@ -769,6 +987,18 @@ if HAS_QT:
                 if not HAS_QTCHARTS or not self.chart_container:
                     return
                 self._clear_chart_container()
+                # Khi không có dữ liệu tấn công trong 24h qua: hiển thị thông báo thay vì biểu đồ trống
+                if not hourly or sum(hourly) == 0:
+                    no_data = QLabel(
+                        "Không có dữ liệu tấn công trong 24h qua.\n"
+                        "Chạy Detection (mục 7) hoặc đảm bảo data/processed/logs.csv (hoặc predictions.csv) có bản ghi is_attack/ml_anomaly."
+                    )
+                    no_data.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    no_data.setWordWrap(True)
+                    no_data.setMinimumHeight(120)
+                    no_data.setStyleSheet(f"color: {_TEXT_MUTED}; font-size: 10px; background: {_BG_DARK}; border-radius: 6px; padding: 8px;")
+                    self.chart_container.layout().addWidget(no_data)
+                    return
                 from PySide6.QtCharts import QBarCategoryAxis, QBarSeries, QBarSet, QChart, QChartView, QValueAxis
                 bar_set = QBarSet("Attacks")
                 bar_set.append(hourly)
@@ -779,22 +1009,39 @@ if HAS_QT:
                 chart.addSeries(series)
                 chart.setTitle("")
                 chart.setAnimationOptions(QChart.AnimationOption.SeriesAnimations)
+                chart.setBackgroundBrush(QColor(_BG_DARK))
+                chart.setPlotAreaBackgroundVisible(True)
+                chart.setPlotAreaBackgroundBrush(QColor(_BG_CARD))
                 categories = []
                 for i in range(24):
-                    h = (datetime.now() - timedelta(hours=23 - i)).strftime("%H:%M")
+                    # Chỉ hiển thị giờ để tránh rối chữ
+                    h = (datetime.now() - timedelta(hours=23 - i)).strftime("%H")
                     categories.append(h)
                 axis_x = QBarCategoryAxis()
                 axis_x.append(categories)
+                axis_x.setLabelsAngle(-45)
+                axis_x.setLabelsColor(QColor(_TEXT_MUTED))
+                axis_x.setGridLineVisible(False)
+                axis_x.setTitleText("")
+                axis_font = QFont()
+                axis_font.setPointSize(8)
+                axis_x.setLabelsFont(axis_font)
                 chart.addAxis(axis_x, Qt.AlignmentFlag.AlignBottom)
                 series.attachAxis(axis_x)
                 axis_y = QValueAxis()
                 axis_y.setRange(0, max(max(hourly, default=0), 1))
+                axis_y.setLabelFormat("%d")
+                axis_y.setLabelsColor(QColor(_TEXT_MUTED))
+                axis_y.setGridLineColor(QColor(_BORDER))
+                axis_y.setLinePenColor(QColor(_BORDER))
+                axis_y.setLabelsFont(axis_font)
                 chart.addAxis(axis_y, Qt.AlignmentFlag.AlignLeft)
                 series.attachAxis(axis_y)
                 chart.legend().setVisible(False)
                 chart_view = QChartView(chart)
-                chart_view.setMinimumHeight(120)
+                chart_view.setMinimumHeight(170)
                 chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
+                chart_view.setStyleSheet("background: transparent;")
                 self.chart_container.layout().addWidget(chart_view)
                 self.chart_view = chart_view
             except Exception:
@@ -805,6 +1052,14 @@ if HAS_QT:
                 if not self.chart_container:
                     return
                 self._clear_chart_container()
+                if not hourly or sum(hourly) == 0:
+                    no_data = QLabel("Không có dữ liệu tấn công trong 24h qua. Chạy Detection hoặc kiểm tra logs.csv / predictions.csv.")
+                    no_data.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    no_data.setWordWrap(True)
+                    no_data.setMinimumHeight(80)
+                    no_data.setStyleSheet(f"color: {_TEXT_MUTED}; font-size: 10px; background: {_BG_DARK}; border-radius: 6px; padding: 8px;")
+                    self.chart_container.layout().addWidget(no_data)
+                    return
                 max_val = max(hourly, default=1) or 1
                 blocks = " ▂▃▄▅▆▇█"
                 lines = []
@@ -845,8 +1100,24 @@ if HAS_QT:
             self.selected_action = action_str
             for a, btn, _ in self.action_buttons:
                 btn.setChecked(a == action_str)
-            self.frame_csv.setVisible("6.4" in (action_str or ""))
-            self.frame_reset_opts.setVisible("1. Reset" in (action_str or ""))
+            # Chỉ đổi visibility khi các frame đã được tạo (tránh lỗi khi gọi sớm trong __init__)
+            if hasattr(self, "frame_training_src"):
+                self.frame_training_src.setVisible("6.2" in (action_str or "") and "Chuẩn bị & Train" in (action_str or ""))
+            if hasattr(self, "frame_csv"):
+                self.frame_csv.setVisible("6.4" in (action_str or ""))
+            if hasattr(self, "frame_reset_opts"):
+                self.frame_reset_opts.setVisible("1. Reset" in (action_str or ""))
+            if hasattr(self, "frame_scenario_custom"):
+                rb = self.training_src_group.checkedButton() if hasattr(self, "training_src_group") else None
+                src = rb.property("value") if rb else "synthetic"
+                self.frame_scenario_custom.setVisible("6.2" in (action_str or "") and src == "custom")
+
+        def _on_scenario_src_toggled(self):
+            if not hasattr(self, "frame_scenario_custom"):
+                return
+            rb = self.training_src_group.checkedButton()
+            src = rb.property("value") if rb else "synthetic"
+            self.frame_scenario_custom.setVisible(src == "custom")
 
         def _log_qt(self, msg, is_error=False):
             self.msg_queue.put(("log", msg, is_error))
@@ -901,6 +1172,11 @@ if HAS_QT:
             else:
                 self._log_qt("Không ghi được file.", is_error=True)
             self._update_testlog_status_qt()
+            try:
+                self.frame_log_panel.setVisible(False)
+                self.btn_toggle_log.setText("Ghi log")
+            except Exception:
+                pass
 
         def _do_action_qt(self, action):
             if action == "1. Reset dữ liệu (xóa index)":
@@ -948,7 +1224,7 @@ if HAS_QT:
                     self.confirm_reset = False
                 else:
                     self.confirm_reset = True
-                    self._log_qt("Bấm Thực thi lần nữa để xác nhận Reset.")
+                    self._log_qt("Bấm Start Security Workflow lần nữa để xác nhận Stop SIEM.")
 
             elif action == "2. Mở Filebeat (cửa sổ mới)":
                 fb_dir = ROOT / "config" / "filebeat"
@@ -968,50 +1244,115 @@ if HAS_QT:
                 ok, out = run_cmd_shell("curl -s http://127.0.0.1:9200/_cat/indices?v 2>nul", timeout=10)
                 self._log_qt(out or "Kibana: http://localhost:5601")
 
+            elif action == "15. Sync model":
+                self._log_qt("Sync model: kiểm tra ES + model...")
+                es_ok = check_elasticsearch()
+                self._log_qt("Elasticsearch: " + ("OK" if es_ok else "Dừng"))
+                model_path = ROOT / "data" / "models" / "ssh_attack_model.joblib"
+                if model_path.exists():
+                    try:
+                        ver = "v1.0." + datetime.fromtimestamp(model_path.stat().st_mtime).strftime("%y%m%d")
+                        self._log_qt("Model: đã đồng bộ (" + ver + ")")
+                    except Exception:
+                        self._log_qt("Model: đã tải")
+                else:
+                    self._log_qt("Model: chưa có. Chạy Train Global Model trước.")
+                QTimer.singleShot(200, self._update_status_bar_qt)
+                QTimer.singleShot(200, self._refresh_stats_qt)
+
+            elif action == "14. Start Monitoring":
+                self._log_qt("Start Monitoring: Check ELK → Load Model → Collect Logs → Feature Extraction → ML Detection → Write Alert ES → Suggest Defense → Dashboard.")
+                def _run_flow():
+                    try:
+                        from elkshield.flow import run_monitoring_flow
+                        ok, msg = run_monitoring_flow(
+                            log_callback=lambda t, m, e: self.msg_queue.put((t, m, e)),
+                            open_browser=True,
+                            write_test_log_first=True,
+                        )
+                        self.msg_queue.put(("log", "=== Hoàn tất: %s ===" % msg, not ok))
+                    except Exception as e:
+                        self.msg_queue.put(("log", "Lỗi unified flow: %s. Chạy fallback script." % e, True))
+                        # Fallback: chạy script như cũ
+                        run_cmd_stream(
+                            ["scripts/run_by_architecture.py", "--no-browser"],
+                            str(ROOT), 1200, self.msg_queue.put,
+                        )
+                        webbrowser.open("http://localhost:5601/app/discover#/?_a=(index:ml-alerts)")
+                threading.Thread(target=_run_flow, daemon=True).start()
+
             elif action == "6.1 Train UNIFIED (gộp dataset)":
                 ok, out = run_cmd(["scripts/train_model.py"], timeout=900)
                 self._log_qt(out or "(xong)", is_error=not ok)
 
-            elif action == "6.2 Chuẩn bị Synthetic (~8000 dòng)":
-                ok1, out1 = run_cmd(["scripts/generate_synthetic_logs.py", "--total", "8000", "--normal-ratio", "0.85", "--days", "14", "--replace-logs"], timeout=300)
-                if ok1:
-                    ok2, out2 = run_cmd(["scripts/data_preprocessing.py", "--input", "data/raw/logs.csv", "--output", "data/processed/logs.csv", "--clean", "--extract-time", "--extract-ip", "--extract-attack"], timeout=120)
-                    self._log_qt(out1 + "\n\n" + out2)
-                else:
-                    self._log_qt(out1, is_error=True)
-
-            elif action == "6.3 Train Russell Mitchell":
-                if not (ROOT / "data" / "russellmitchell" / "gather").exists():
-                    self._log_qt("Thư mục data/russellmitchell/gather không tồn tại.", is_error=True)
-                else:
-                    for desc, args in [
-                        ("Bước 1/4", ["scripts/russellmitchell_auth_to_csv.py", "--data-dir", "data/russellmitchell", "--output", "data/raw/russellmitchell_auth.csv", "--with-labels"]),
-                        ("Bước 2/4", ["scripts/data_preprocessing.py", "--input", "data/raw/russellmitchell_auth.csv", "--output", "data/processed/russellmitchell_processed.csv", "--clean", "--extract-time", "--extract-ip", "--extract-attack", "--log-type", "ssh"]),
-                        ("Bước 3/4", ["scripts/ml_detector.py", "--input", "data/processed/russellmitchell_processed.csv", "--train", "--model-type", "random_forest", "--model-file", "data/models/rf_russellmitchell.joblib", "--output", "data/processed/russellmitchell_predictions.csv", "--handle-imbalance"]),
-                        ("Bước 4/4", ["scripts/elasticsearch_writer.py", "--input", "data/processed/russellmitchell_predictions.csv", "--index", "ml-alerts", "--host", "127.0.0.1", "--port", "9200", "--model-name", "russellmitchell"]),
-                    ]:
-                        ok, out = run_cmd(args, timeout=300)
-                        self._log_qt(f"{desc}: " + (out or "(xong)"))
+            elif action == "6.2 Chuẩn bị & Train (Synthetic / Russell)":
+                rb = self.training_src_group.checkedButton()
+                src = rb.property("value") if rb else "synthetic"
+                if src == "synthetic":
+                    ok1, out1 = run_cmd(["scripts/generate_synthetic_logs.py", "--total", "8000", "--normal-ratio", "0.85", "--days", "14", "--replace-logs"], timeout=300)
+                    if ok1:
+                        ok2, out2 = run_cmd(["scripts/data_preprocessing.py", "--input", "data/raw/logs.csv", "--output", "data/processed/logs.csv", "--clean", "--extract-time", "--extract-ip", "--extract-attack"], timeout=120)
+                        self._log_qt(out1 + "\n\n" + (out2 or "(xong)"))
+                    else:
+                        self._log_qt(out1, is_error=True)
+                elif src == "russell":
+                    if not (ROOT / "data" / "russellmitchell" / "gather").exists():
+                        self._log_qt("Thư mục data/russellmitchell/gather không tồn tại.", is_error=True)
+                    else:
+                        for desc, args in [
+                            ("Bước 1/4", ["scripts/russellmitchell_auth_to_csv.py", "--data-dir", "data/russellmitchell", "--output", "data/raw/russellmitchell_auth.csv", "--with-labels"]),
+                            ("Bước 2/4", ["scripts/data_preprocessing.py", "--input", "data/raw/russellmitchell_auth.csv", "--output", "data/processed/russellmitchell_processed.csv", "--clean", "--extract-time", "--extract-ip", "--extract-attack", "--log-type", "ssh"]),
+                            ("Bước 3/4", ["scripts/ml_detector.py", "--input", "data/processed/russellmitchell_processed.csv", "--train", "--model-type", "random_forest", "--model-file", "data/models/rf_russellmitchell.joblib", "--output", "data/processed/russellmitchell_predictions.csv", "--handle-imbalance"]),
+                            ("Bước 4/4", ["scripts/elasticsearch_writer.py", "--input", "data/processed/russellmitchell_predictions.csv", "--index", "ml-alerts", "--host", "127.0.0.1", "--port", "9200", "--model-name", "russellmitchell"]),
+                        ]:
+                            ok, out = run_cmd(args, timeout=300)
+                            self._log_qt(f"{desc}: " + (out or "(xong)"))
+                            if not ok:
+                                self._log_qt(out, is_error=True)
+                                break
+                elif src == "kaggle":
+                    if not (ROOT / "data" / "ssh_anomaly_dataset.csv").exists():
+                        self._log_qt("Chưa có file data/ssh_anomaly_dataset.csv.", is_error=True)
+                    else:
+                        self._log_qt("Train Scenario (Kaggle): pipeline đầy đủ...")
+                        ok = run_cmd_stream(
+                            ["scripts/run_pipeline_ssh.py", "--input", "data/ssh_anomaly_dataset.csv", "--kaggle", "--output-dir", "data", "--model-type", "random_forest"],
+                            str(ROOT), 1800, self.msg_queue.put,
+                        )
                         if not ok:
-                            self._log_qt(out, is_error=True)
-                            break
+                            self._log_qt("Pipeline Kaggle kết thúc với lỗi hoặc timeout.", is_error=True)
+                elif src == "custom":
+                    custom_path = (self.entry_scenario_custom.text() or "").strip()
+                    if not custom_path or not (ROOT / custom_path).exists():
+                        self._log_qt("Nhập đường dẫn tệp CSV (Custom) và đảm bảo file tồn tại.", is_error=True)
+                    else:
+                        self._log_qt("Train Scenario (Custom): preprocess → train → (ghi ES nếu chọn)...")
+                        ok1, out1 = run_cmd(["scripts/data_preprocessing.py", "--input", custom_path, "--output", "data/processed/custom_processed.csv", "--clean", "--extract-time", "--extract-ip", "--extract-attack", "--log-type", "ssh"], timeout=120)
+                        if ok1:
+                            ok2, out2 = run_cmd(["scripts/ml_detector.py", "--input", "data/processed/custom_processed.csv", "--train", "--model-type", "random_forest", "--model-file", "data/models/rf_custom.joblib", "--output", "data/processed/custom_predictions.csv", "--handle-imbalance"], timeout=300)
+                            self._log_qt(out2 or "(xong)", is_error=not ok2)
+                            if ok2 and self.write_es_scenario_cb.isChecked():
+                                ok3, out3 = run_cmd(["scripts/elasticsearch_writer.py", "--input", "data/processed/custom_predictions.csv", "--index", "ml-alerts", "--host", "127.0.0.1", "--port", "9200", "--model-name", "csv"], timeout=300)
+                                self._log_qt("Ghi ES: " + (out3 or "(xong)"), is_error=not ok3)
+                        else:
+                            self._log_qt(out1 or "Preprocess thất bại.", is_error=True)
 
-            elif action == "6.4 Train từ CSV (A/B/C)":
+            elif action == "6.4 Train từ CSV (Kaggle / tệp)":
                 rb = self.csv_group.checkedButton()
-                val = rb.property("value") if rb else "A"
+                val = rb.property("value") if rb else "B"
                 custom_path = (self.entry_csv.text() or "").strip()
                 write_es = self.write_es_cb.isChecked()
-                if val == "A":
-                    ok, out = run_cmd(["scripts/data_preprocessing.py", "--input", "data/raw/russellmitchell_auth.csv", "--output", "data/processed/russellmitchell_processed.csv", "--clean", "--extract-time", "--extract-ip", "--extract-attack", "--log-type", "ssh"])
-                    if ok:
-                        ok, out = run_cmd(["scripts/ml_detector.py", "--input", "data/processed/russellmitchell_processed.csv", "--train", "--model-type", "random_forest", "--model-file", "data/models/rf_russellmitchell.joblib", "--output", "data/processed/russellmitchell_predictions.csv", "--handle-imbalance"], timeout=300)
-                    if ok and write_es:
-                        ok, out = run_cmd(["scripts/elasticsearch_writer.py", "--input", "data/processed/russellmitchell_predictions.csv", "--index", "ml-alerts", "--host", "127.0.0.1", "--port", "9200", "--model-name", "russellmitchell"])
-                    self._log_qt(out or "(xong)", is_error=not ok)
-                elif val == "B":
+                if val == "B":
                     if (ROOT / "data" / "ssh_anomaly_dataset.csv").exists():
-                        ok, out = run_cmd(["scripts/run_pipeline_ssh.py", "--input", "data/ssh_anomaly_dataset.csv", "--kaggle", "--output-dir", "data", "--model-type", "random_forest"], timeout=600)
-                        self._log_qt(out or "(xong)", is_error=not ok)
+                        self._log_qt("Đang chạy pipeline Kaggle CSV (có thể mất vài phút)...")
+                        ok = run_cmd_stream(
+                            ["scripts/run_pipeline_ssh.py", "--input", "data/ssh_anomaly_dataset.csv", "--kaggle", "--output-dir", "data", "--model-type", "random_forest"],
+                            str(ROOT),
+                            1800,
+                            self.msg_queue.put,
+                        )
+                        if not ok:
+                            self._log_qt("Pipeline Kaggle kết thúc với lỗi hoặc timeout.", is_error=True)
                     else:
                         self._log_qt("Chưa có file data/ssh_anomaly_dataset.csv.", is_error=True)
                 elif val == "C" and custom_path and (ROOT / custom_path).exists():
@@ -1022,7 +1363,16 @@ if HAS_QT:
                         ok, out = run_cmd(["scripts/elasticsearch_writer.py", "--input", "data/processed/custom_predictions.csv", "--index", "ml-alerts", "--host", "127.0.0.1", "--port", "9200", "--model-name", "csv"])
                     self._log_qt(out or "(xong)", is_error=not ok)
                 else:
-                    self._log_qt("Chọn A/B hoặc nhập đường dẫn CSV hợp lệ (C).", is_error=True)
+                    self._log_qt("Chọn Kaggle hoặc nhập đường dẫn tệp CSV (C).", is_error=True)
+
+            elif action == "17. Model Explainability":
+                self._log_qt("Model Explainability (Explainable AI):")
+                self._log_qt("  • Mô hình: Random Forest — feature importance có thể xuất từ scripts/ml_detector.py (--metrics-output).")
+                self._log_qt("  • Phát hiện: nhãn is_attack / ml_anomaly kèm theo log → dễ truy vết nguyên nhân.")
+                self._log_qt("  • Timeline 24h + Defense Strategy: hỗ trợ giải thích bối cảnh tấn công và đề xuất phòng thủ.")
+                explain_doc = ROOT / "docs" / "ARCHITECTURE_RESEARCH.md"
+                if explain_doc.exists():
+                    self._log_qt("  • Chi tiết kiến trúc: docs/ARCHITECTURE_RESEARCH.md")
 
             elif action == "7. Detection online (→ ml-alerts)":
                 if not (ROOT / "data" / "models" / "ssh_attack_model.joblib").exists():
@@ -1107,6 +1457,60 @@ if HAS_QT:
             elif action == "12. Stack Management":
                 webbrowser.open("http://localhost:5601/app/management/data/index_management/indices")
                 self._log_qt("Đã mở Kibana Stack Management → Index Management.")
+
+            elif action == "13. Xem đề xuất phòng thủ":
+                self._show_defense_recommendations_qt()
+
+        def _show_defense_recommendations_qt(self):
+            """Đọc kết quả detection (predictions) và hiển thị đề xuất phòng thủ theo loại tấn công."""
+            pred_files = [
+                ROOT / "data" / "predictions.csv",
+                ROOT / "data" / "processed" / "predictions.csv",
+                ROOT / "data" / "processed" / "russellmitchell_predictions.csv",
+                ROOT / "data" / "processed" / "custom_predictions.csv",
+            ]
+            csv_path = None
+            for p in pred_files:
+                if p.exists():
+                    csv_path = p
+                    break
+            if not csv_path:
+                self._log_qt("Chưa có file predictions. Chạy Detection (mục 7) trước.", is_error=True)
+                return
+            try:
+                from scripts.defense_recommendations import get_recommendations, format_recommendations_text
+            except ImportError:
+                try:
+                    from defense_recommendations import get_recommendations, format_recommendations_text
+                except ImportError:
+                    self._log_qt("Không tìm thấy module defense_recommendations.", is_error=True)
+                    return
+            lines = []
+            seen_types = set()
+            with open(csv_path, "r", encoding="utf-8", errors="replace") as f:
+                reader = csv.DictReader(f)
+                if not reader.fieldnames:
+                    self._log_qt("File predictions rỗng hoặc không đúng format.", is_error=True)
+                    return
+                for row in reader:
+                    is_anomaly = (
+                        str(row.get("ml_anomaly", "")).strip().lower() in ("true", "1", "yes")
+                        or str(row.get("prediction", "")).strip().lower() in ("true", "1", "yes")
+                        or str(row.get("is_attack", "")).strip().lower() == "true"
+                    )
+                    if not is_anomaly:
+                        continue
+                    at = (row.get("attack_type") or "").strip() or "unknown"
+                    if at not in seen_types:
+                        seen_types.add(at)
+                        lines.append("--- Đề xuất phòng thủ (loại: %s) ---" % (at or "unknown"))
+                        lines.append(format_recommendations_text(at, "high"))
+                        lines.append("")
+            if not lines:
+                lines.append("Không có bản ghi bất thường trong file predictions, hoặc chưa chạy Detection.")
+                lines.append("Đề xuất mẫu (unknown):")
+                lines.append(format_recommendations_text("unknown", "high"))
+            self._log_qt("\n".join(lines))
 
 
 if __name__ == "__main__":

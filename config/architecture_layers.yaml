@@ -1,0 +1,66 @@
+# ELKShield - Ánh xạ 5 tầng kiến trúc (Research Paper) sang thành phần dự án
+# Xem docs/ARCHITECTURE_RESEARCH.md
+
+data_layer:
+  name: "Data Layer (Heterogeneous Log Sources)"
+  sources:
+    - type: ssh_logs
+      description: "SSH / auth / sshd logs"
+      config: "config/filebeat/filebeat.yml"
+      paths: ["test.log (Documents)", "data/russellmitchell/gather/*/logs/auth.log"]
+    - type: system_logs
+      description: "System / syslog"
+      config: "config/filebeat/filebeat.yml"
+    - type: app_logs
+      description: "App / web server logs"
+      config: "config/filebeat/filebeat.yml (log_type: web)"
+      data: "data/apache-http-logs-master/"
+    - type: synthetic_attack_logs
+      description: "Synthetic attack logs"
+      script: "scripts/generate_synthetic_logs.py"
+      output: "data/raw/logs.csv"
+    - type: public_datasets
+      description: "Public datasets"
+      paths: ["data/ssh_anomaly_dataset.csv", "data/russellmitchell/", "data/dataset1/"]
+  collection: "Filebeat / Agent -> Logstash:5044"
+
+siem_layer:
+  name: "SIEM Layer (ELK Core - Hybrid SIEM)"
+  components:
+    ingestion: "Filebeat"
+    parsing: "config/logstash/pipeline.conf (Grok)"
+    enrichment: "Logstash (date, index_prefix, tags)"
+    rule_based_detection: "Logstash (brute_force, sql_injection, xss)"
+    correlation: "scripts/data_preprocessing.py (time window, IP aggregation)"
+    storage: "Elasticsearch (test-logs-*, ssh-logs-*, web-logs-*)"
+    visualization: "Kibana"
+
+ml_layer:
+  name: "ML Layer (AI-Driven Threat Detection Engine)"
+  offline:
+    dataset_aggregation: "scripts/merge_training_datasets.py"
+    feature_engineering: "scripts/data_preprocessing.py"
+    model_training: "scripts/train_model.py, scripts/ml_detector.py"
+    models: ["Random Forest", "Isolation Forest", "One-Class SVM"]
+    output: "data/models/ssh_attack_model.joblib"
+  online:
+    stream_feature_extraction: "scripts/data_preprocessing.py (in run_pipeline_detection)"
+    real_time_detection: "scripts/run_pipeline_detection.py"
+  future: "LSTM, Deep Learning"
+
+detection_strategy:
+  name: "Hybrid Detection Strategy"
+  rule_based: "Logstash pipeline (brute force, SQLi, XSS); threshold (future)"
+  ml_based: "RF, Isolation Forest, One-Class SVM (scripts/ml_detector.py)"
+  future: "Deep Learning"
+
+response_layer:
+  name: "Response Layer (Semi-Automated Response Framework)"
+  implemented:
+    alert: "ml-alerts-* index; Kibana Alerting"
+    visualization: "Kibana; run_simulation_app (timeline, stats)"
+    suggest_defense: "scripts/defense_recommendations.py; app 'Xem đề xuất phòng thủ'"
+  future:
+    - "Auto block IP (scripts/response/auto_mitigation_stub.py)"
+    - "Firewall integration"
+    - "IDS integration"

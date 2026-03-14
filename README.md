@@ -2,20 +2,30 @@
 
 Hệ thống giám sát an ninh mạng dựa trên ELK Stack và Machine Learning (SSH/web logs, anomaly detection).
 
-## Hướng dẫn nhanh
+## Chạy thống nhất (Unified Security Platform)
+
+- **Một chương trình điều phối:** `python elkshield.py` — mở dashboard (PySide6). Bấm **▶ Start Monitoring** → hệ thống chạy: Check ELK → Load Model → Collect Logs → Feature Extraction → ML Detection → Write Alert ES → Suggest Defense → mở Kibana. Đây là kiến trúc research (Core + SIEM + UI).
+- **CLI:** `python elkshield.py --monitor` (chạy flow đầy đủ), `python elkshield.py --train` (train UNIFIED), `python elkshield.py --gui` (mở dashboard).
+- **Cấu trúc package:** `elkshield/core/` (collector, processor, ml_engine, defense), `elkshield/siem/` (elastic, kibana), `elkshield/ui/` (dashboard, cli), `elkshield/flow.py` (luồng Start Monitoring).
+
+## Hướng dẫn nhanh (script rời)
 
 - **Hướng dẫn thực hiện & chạy demo:** [HUONG_DAN_THUC_HIEN_DU_AN.md](HUONG_DAN_THUC_HIEN_DU_AN.md)
 - **Chạy từng bước:** [HUONG_DAN_CHAY.md](HUONG_DAN_CHAY.md)
 - **Dataset thật & pipeline mới:** [HUONG_DAN_DATASET_THAT_VA_PIPELINE.md](HUONG_DAN_DATASET_THAT_VA_PIPELINE.md)
 - **Demo:** thư mục [Demo/](Demo/) – chạy **DEMO.bat**; [6] Chọn dataset để train (gồm [5] Train unified model); [1] Detection online dùng model đã train.
-- **Mô phỏng (giao diện):** Chạy **`python run_simulation.py`** – mở giao diện web (Streamlit) tại http://localhost:8501 để chọn và chạy từng bước (Reset, Filebeat, Kibana, tạo log, Train, Detection, Demo). Cần cài: `pip install streamlit`.
-- **Ứng dụng desktop (không dùng web):** Chạy **`python run_simulation_app.py`** – mở cửa sổ ứng dụng (CustomTkinter), cùng chức năng mô phỏng. Cần cài: `pip install customtkinter`. Nếu chưa cài CustomTkinter, chương trình vẫn chạy được với giao diện tkinter mặc định.
+- **Mô phỏng (giao diện):** Chạy **`python run_simulation.py`** – mở giao diện web (Streamlit) tại http://localhost:8501. Cần cài: `pip install streamlit`.
+- **Ứng dụng desktop (tương đương elkshield.py):** **`python run_simulation_app.py`** – cùng dashboard với **Start Monitoring**. Cần cài: `pip install PySide6`.
+
+## Kiến trúc (Research Paper)
+
+ELKShield theo kiến trúc 5 tầng: **Data Layer** (Heterogeneous Log Sources) → **SIEM Layer** (ELK: ingestion, parsing, correlation, storage, visualization) → **ML Layer** (AI-Driven Threat Detection: offline train + online detection) → **Hybrid Detection** (rule-based + ML) → **Response Layer** (Semi-Automated: alert, visualization, suggest defense; future: auto block, firewall/IDS). Chi tiết và sơ đồ: **[docs/ARCHITECTURE_RESEARCH.md](docs/ARCHITECTURE_RESEARCH.md)**.
 
 ## Thành phần chính
 
 - **scripts/** – Python: trích xuất log (data_extraction), tiền xử lý (data_preprocessing), ML (ml_detector), ghi ES (elasticsearch_writer), **analyze_datasets** (phân tích dataset), **run_pipeline_ssh** (chạy pipeline SSH một lệnh)
 - **data/** – Dataset (raw, processed, models), xem [data/README.md](data/README.md)
-- **config/** – Filebeat, Logstash pipeline
+- **config/** – Filebeat, Logstash pipeline (rule-based: brute force, SQLi, XSS)
 - **docker/** – docker-compose cho ELK
 
 ## Cải tiến gần đây

@@ -27,7 +27,8 @@ def clean_data(df):
     df[numeric_cols] = df[numeric_cols].fillna(0)
     
     # Fill categorical columns with 'unknown'
-    categorical_cols = df.select_dtypes(include=['object', 'str']).columns
+    # NOTE: pandas/numpy versions may reject dtype name "str" here; "object" covers string columns reliably.
+    categorical_cols = df.select_dtypes(include=['object']).columns
     df[categorical_cols] = df[categorical_cols].fillna('unknown')
     
     return df
