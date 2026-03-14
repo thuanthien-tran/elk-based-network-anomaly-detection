@@ -14,7 +14,6 @@ Hệ thống giám sát an ninh mạng dựa trên ELK Stack và Machine Learnin
 - **Chạy từng bước:** [HUONG_DAN_CHAY.md](HUONG_DAN_CHAY.md)
 - **Dataset thật & pipeline mới:** [HUONG_DAN_DATASET_THAT_VA_PIPELINE.md](HUONG_DAN_DATASET_THAT_VA_PIPELINE.md)
 - **Demo:** thư mục [Demo/](Demo/) – chạy **DEMO.bat**; [6] Chọn dataset để train (gồm [5] Train unified model); [1] Detection online dùng model đã train.
-- **Mô phỏng (giao diện):** Chạy **`python run_simulation.py`** – mở giao diện web (Streamlit) tại http://localhost:8501. Cần cài: `pip install streamlit`.
 - **Ứng dụng desktop (tương đương elkshield.py):** **`python run_simulation_app.py`** – cùng dashboard với **Start Monitoring**. Cần cài: `pip install PySide6`.
 
 ## Kiến trúc (Research Paper)
@@ -35,23 +34,18 @@ ELKShield theo kiến trúc 5 tầng: **Data Layer** (Heterogeneous Log Sources)
 - **ML:** `ml_detector.py` hỗ trợ `--tune` (GridSearchCV cho Random Forest), `--metrics-output` (lưu precision/recall/F1/ROC-AUC ra JSON).
 - **Phân tích:** `python scripts/analyze_datasets.py --data-dir data [--csv-detail]` để liệt kê và thống kê dataset.
 - **Pipeline một lệnh:** `python scripts/run_pipeline_ssh.py --input data/ssh_anomaly_dataset.csv --kaggle --output-dir data` (convert → preprocess → train → lưu model + metrics).
-- **API inference real-time:** `python scripts/inference_api.py --model-file data/models/rf_ssh_random_forest.joblib --port 5000` → POST /predict với JSON records.
-- **Pipeline web:** `python scripts/run_pipeline_web.py --input data/apache-http-logs-master/acunetix.txt --from-apache --output-dir data`.
 - **Dataset Russell Mitchell:** auth.log trong `data/russellmitchell/gather/*/logs/` → `python scripts/russellmitchell_auth_to_csv.py --data-dir data/russellmitchell --output data/raw/russellmitchell_auth.csv [--with-labels]` rồi chạy pipeline SSH với file CSV đó. Xem [data/russellmitchell/README.md](data/russellmitchell/README.md).
 - **Bảo mật ELK:** Xem [docs/BAO_MAT_ELK.md](docs/BAO_MAT_ELK.md) (lab vs production, xpack, user/password, TLS).
 - **Kiểm thử:** `pip install -r requirements-dev.txt` rồi `pytest tests/`. CI: GitHub Actions chạy pytest trên push/PR (xem [.github/workflows/test.yml](.github/workflows/test.yml)).
-- **Inference API** cần Flask: `pip install flask`. Bảo mật: `--api-key` hoặc `--basic-auth user:pass` (hoặc env `ELKSHIELD_API_KEY`).
 - **Dashboard & Cảnh báo Kibana:** [docs/HUONG_DAN_DASHBOARD_KIBANA.md](docs/HUONG_DAN_DASHBOARD_KIBANA.md), [docs/HUONG_DAN_ALERTING_KIBANA.md](docs/HUONG_DAN_ALERTING_KIBANA.md).
 - **Xử lý lỗi thường gặp:** [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
-- **Pipeline web (train + ml-alerts):** `run_pipeline_web.py --input ... [--from-apache] --train --write-es` → ghi ml-alerts với `ml_model=web`.
-- **Near real-time detection:** Chạy detection theo chu kỳ (cron/Task Scheduler): [docs/NEAR_REALTIME_DETECTION.md](docs/NEAR_REALTIME_DETECTION.md); dùng `run_detection_interval.bat` / `run_detection_interval.sh`.
+- **Near real-time detection:** Chạy detection theo chu kỳ (cron/Task Scheduler): [docs/NEAR_REALTIME_DETECTION.md](docs/NEAR_REALTIME_DETECTION.md).
 
 ## Chạy production
 
 Cấu hình mặc định (HTTP, không xác thực) phù hợp **lab/demo**. Khi triển khai thật (máy chạy 24/7, nhiều người dùng, expose internet):
 
 - **Bảo mật ELK:** Bật xpack security, user/password, TLS cho Elasticsearch và Kibana; cấu hình Filebeat, Logstash và script Python dùng credentials. Chi tiết từng bước: **[docs/BAO_MAT_ELK.md](docs/BAO_MAT_ELK.md)**.
-- **API inference:** Chạy với `--api-key` hoặc `--basic-auth`; không bind `0.0.0.0` nếu không cần truy cập từ ngoài.
 - **Kibana:** Tạo rule cảnh báo (Alerting) và dashboard theo [docs/HUONG_DAN_ALERTING_KIBANA.md](docs/HUONG_DAN_ALERTING_KIBANA.md), [docs/HUONG_DAN_DASHBOARD_KIBANA.md](docs/HUONG_DAN_DASHBOARD_KIBANA.md).
 
 ## Yêu cầu tài nguyên (gợi ý)
@@ -59,4 +53,4 @@ Cấu hình mặc định (HTTP, không xác thực) phù hợp **lab/demo**. Kh
 - **RAM:** Tối thiểu 4 GB cho máy chạy Docker (ELK) + Python; dataset > 100k dòng nên 8 GB; train unified lớn hoặc extract ES nhiều batch nên 8–16 GB.
 - **Ổ đĩa:** ~2 GB cho Docker images; thêm dung lượng theo size dataset (raw/processed) và index Elasticsearch (ml-alerts-*, test-logs-* tăng theo thời gian).
 - **Elasticsearch:** Mặc định heap ~1 GB; có thể tăng trong docker-compose nếu index lớn.
-- **Encoding:** File log nên UTF-8; nếu log Windows/ISO-8859, dùng `--encoding` (ví dụ `apache_log_to_csv.py --encoding utf-8` hoặc cp1252 khi cần).
+- **Encoding:** File log nên UTF-8; nếu log Windows/ISO-8859, dùng tham số `--encoding` tương ứng (vd. cp1252) trong script xử lý.
