@@ -50,10 +50,16 @@ if errorlevel 1 (
 git push
 if errorlevel 1 (
     echo.
-    echo   Loi push. Kiem tra remote "origin" va mang.
-    echo   Lan dau: git remote add origin https://github.com/USER/REPO.git
-    pause
-    exit /b 1
+    echo   Thu push voi --set-upstream origin main (lan dau hoac chua set upstream)...
+    git push --set-upstream origin main
+    if errorlevel 1 (
+        echo.
+        echo   Loi push. Kiem tra:
+        echo   - remote: git remote -v
+        echo   - Lan dau: git remote add origin https://github.com/USER/REPO.git
+        pause
+        exit /b 1
+    )
 )
 
 echo.
