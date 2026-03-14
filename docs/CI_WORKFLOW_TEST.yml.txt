@@ -1,3 +1,4 @@
+# Backup: GitHub Actions workflow (deploy lai vao .github/workflows/test.yml khi token co scope "workflow")
 # CI: chay pytest khi push/PR
 name: Tests
 
