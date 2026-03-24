@@ -10,6 +10,7 @@ import pandas as pd
 import json
 import argparse
 import sys
+import fnmatch
 
 def connect_elasticsearch(host='localhost', port=9200, scheme='http', retries=3, retry_delay=2):
     """Connect to Elasticsearch with retries (robustness: transient failures)."""
@@ -127,6 +128,48 @@ def extract_logs(es, index_pattern, start_time, end_time, size=10000, batch_size
                 es.clear_scroll(scroll_id=scroll_id)
             except Exception as e:
                 print(f"Warning: Could not clear scroll: {e}")
+
+
+def resolve_index_pattern(es, requested_pattern: str):
+    """
+    Resolve index pattern robustly:
+    - If requested pattern has matches, keep it.
+    - Otherwise auto-switch to a common log index pattern that exists.
+    """
+    try:
+        cat = es.cat.indices(format="json")
+        existing = [
+            x.get("index", "")
+            for x in (cat or [])
+            if x.get("index", "") and not x.get("index", "").startswith(".")
+        ]
+    except Exception:
+        return requested_pattern, []
+
+    # Try requested pattern first (supports comma-separated patterns).
+    req_parts = [p.strip() for p in str(requested_pattern or "").split(",") if p.strip()]
+    req_matches = []
+    for name in existing:
+        if any(fnmatch.fnmatch(name, p) for p in req_parts):
+            req_matches.append(name)
+    if req_matches:
+        return requested_pattern, req_matches
+
+    # Auto-detect common ingestion indices, excluding ml-alerts output indices.
+    fallback_candidates = [
+        "ssh-logs-*",
+        "test-logs-*",
+        "filebeat-*",
+        "logstash-*",
+        "logs-*",
+        "*-logs-*",
+    ]
+    for pat in fallback_candidates:
+        matches = [n for n in existing if fnmatch.fnmatch(n, pat) and not n.startswith("ml-alerts-")]
+        if matches:
+            return pat, matches
+
+    return requested_pattern, []
 
 def get_log_type(log):
     """Get log_type from log, checking both top-level and fields.log_type"""
@@ -426,12 +469,14 @@ def main():
             print("  3. Or skip connection check: --skip-connection-check (for testing)")
             sys.exit(1)
     
-    # List indices matching pattern (help debug when 0 docs)
+    # Resolve index pattern (avoid always-fallback when cluster uses different naming).
     try:
-        matching = es.indices.get(index=args.index)
-        names = [k for k in (matching or {}) if not k.startswith('.')]
+        resolved, names = resolve_index_pattern(es, args.index)
         if names:
-            print(f"  Indices matching '{args.index}': {', '.join(sorted(names))}")
+            if resolved != args.index:
+                print(f"  Requested index '{args.index}' has no data. Auto-switch -> '{resolved}'")
+                args.index = resolved
+            print(f"  Indices matching '{args.index}': {', '.join(sorted(names)[:25])}")
         else:
             cat = es.cat.indices(format="json")
             existing = [x.get("index", "") for x in (cat or []) if x.get("index", "") and not x.get("index", "").startswith(".")]
@@ -440,8 +485,10 @@ def main():
     except Exception as e:
         print(f"  (Kiem tra index: {e})")
     
-    # Calculate time range (use UTC to match Elasticsearch)
-    end_time = datetime.now(timezone.utc)
+    # Calculate time range (use UTC to match Elasticsearch).
+    # Add a forward buffer to tolerate timezone parsing skew (e.g. syslog lines without year/timezone
+    # parsed by Logstash can appear a few hours ahead in @timestamp on local setups).
+    end_time = datetime.now(timezone.utc) + timedelta(hours=12)
     start_time = end_time - timedelta(hours=args.hours)
     
     # Format as ISO 8601 with Z suffix for UTC

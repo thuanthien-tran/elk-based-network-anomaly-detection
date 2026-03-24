@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <title>DEMO BÁO CÁO SỐ LIỆU (TEMPLATE) — ELKShield</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; line-height: 1.35; margin: 24px; }
+    table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+    th, td { border: 1px solid #333; padding: 8px; vertical-align: top; }
+    th { background: #f2f2f2; }
+    code { background: #f6f6f6; padding: 2px 4px; border-radius: 4px; }
+    .muted { color: #666; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>DEMO BÁO CÁO SỐ LIỆU (TEMPLATE) — ELKShield Unified Security Platform</h1>
+  <p class="muted">Template này tạo sẵn các bảng/ô trống để bạn chạy demo của dự án, rồi điền số liệu thực tế vào.</p>
+
+  <h2>1) Thông tin demo</h2>
+  <table>
+    <tr><th>Trường</th><th>Giá trị (điền tay)</th></tr>
+    <tr><td>Ngày giờ chạy demo</td><td><code>__________</code></td></tr>
+    <tr><td>Máy/OS</td><td><code>__________</code></td></tr>
+    <tr><td>Python version</td><td><code>__________</code></td></tr>
+    <tr><td>Elasticsearch status</td><td>OK / FAIL</td></tr>
+    <tr><td>Filebeat status</td><td>OK / FAIL</td></tr>
+    <tr><td>Kibana URL</td><td><code>__________</code></td></tr>
+  </table>
+
+  <h2>2) Train model (ghi theo thao tác bạn đã làm)</h2>
+  <h3>2.1) Train Global Model (UNIFIED) — nếu bạn bấm nút này</h3>
+  <table>
+    <tr><th>Trường</th><th>Giá trị (điền tay)</th></tr>
+    <tr><td>Nút đã bấm</td><td><code>Train Global Model / UNIFIED</code></td></tr>
+    <tr><td>Dataset đã dùng</td><td>Synthetic + Russell Mitchell + Kaggle (hoặc ghi khác: <code>__________</code>)</td></tr>
+    <tr><td>Dataset output CSV</td><td><code>data/training/unified_ssh_dataset.csv</code> (hoặc file khác: <code>__________</code>)</td></tr>
+    <tr><td>Model output file</td><td><code>data/models/ssh_attack_model.joblib</code> (hoặc file khác: <code>__________</code>)</td></tr>
+    <tr><td>Model metrics (nếu có)</td><td>Accuracy / Precision / Recall / F1 = <code>__________</code></td></tr>
+    <tr><td>Confusion matrix</td><td>TP=__, FP=__, FN=__, TN=__</td></tr>
+  </table>
+
+  <h3>2.2) Train Scenario Model (Kaggle / Custom) — nếu bạn bấm nút này</h3>
+  <table>
+    <tr><th>Trường</th><th>Giá trị (điền tay)</th></tr>
+    <tr><td>Nguồn Scenario dataset</td><td>Kaggle hoặc Custom</td></tr>
+    <tr><td>Đường dẫn CSV custom (nếu Custom)</td><td><code>__________</code></td></tr>
+    <tr><td>Output model file (scenario)</td><td><code>__________</code></td></tr>
+    <tr><td>Output CSV trung gian (nếu có)</td><td><code>__________</code></td></tr>
+    <tr><td>Ghi chú</td><td><code>__________</code></td></tr>
+  </table>
+
+  <h2>3) Chạy demo tích hợp (Start Security Workflow)</h2>
+  <table>
+    <tr><th>Bước</th><th>Trạng thái</th><th>Ghi chú (nếu có lỗi)</th></tr>
+    <tr><td>1. Check ELK</td><td>OK/FAIL</td><td><code>__________</code></td></tr>
+    <tr><td>2. Load Model</td><td>OK/FAIL</td><td>Model: <code>__________</code></td></tr>
+    <tr><td>3. Collect Logs</td><td>OK/FAIL</td><td>Lấy từ ES hay fallback: <code>__________</code></td></tr>
+    <tr><td>4. Feature Extraction</td><td>OK/FAIL</td><td><code>__________</code></td></tr>
+    <tr><td>5. ML Detection</td><td>OK/FAIL</td><td>Output CSV: <code>__________</code></td></tr>
+    <tr><td>6. Write Alert ES</td><td>OK/FAIL</td><td>Index: <code>ml-alerts</code> hoặc <code>__________</code></td></tr>
+    <tr><td>7. Suggest Defense</td><td>OK/FAIL</td><td><code>__________</code></td></tr>
+    <tr><td>8. Dashboard Update</td><td>OK/FAIL</td><td>Kibana: <code>__________</code></td></tr>
+  </table>
+
+  <h3>3.2) Số liệu tổng hợp</h3>
+  <table>
+    <tr><th>Trường</th><th>Giá trị (điền tay)</th></tr>
+    <tr><td>Logs processed</td><td><code>__________</code></td></tr>
+    <tr><td>Attacks detected</td><td><code>__________</code></td></tr>
+    <tr><td>Top attacker IP</td><td><code>__________</code></td></tr>
+    <tr><td>Accuracy</td><td><code>__________%</code></td></tr>
+    <tr><td>Precision</td><td><code>__________</code></td></tr>
+    <tr><td>Recall</td><td><code>__________</code></td></tr>
+    <tr><td>F1</td><td><code>__________</code></td></tr>
+    <tr><td>Log ingestion rate (last 60 min)</td><td><code>__________ logs/min</code></td></tr>
+    <tr><td>Alert rate (last 60 min)</td><td><code>__________ alerts/hour</code></td></tr>
+    <tr><td>Model version</td><td><code>__________</code></td></tr>
+    <tr><td>Dataset version</td><td><code>__________</code></td></tr>
+  </table>
+
+  <h3>3.3) Confusion matrix</h3>
+  <table>
+    <tr><th></th><th>Pred Attack</th><th>Pred Normal</th></tr>
+    <tr><td>Actual Attack</td><td>TP = <code>__________</code></td><td>FN = <code>__________</code></td></tr>
+    <tr><td>Actual Normal</td><td>FP = <code>__________</code></td><td>TN = <code>__________</code></td></tr>
+  </table>
+
+  <h2>4) Timeline Attacks (Last 24 hours)</h2>
+  <p>Điền số lượng tấn công theo giờ (0..23) lấy từ UI timeline/attack graph.</p>
+  <table>
+    <tr><th>Hour</th><th># Attacks</th></tr>
+    <tr><td>00</td><td><code>______</code></td></tr>
+    <tr><td>01</td><td><code>______</code></td></tr>
+    <tr><td>02</td><td><code>______</code></td></tr>
+    <tr><td>03</td><td><code>______</code></td></tr>
+    <tr><td>04</td><td><code>______</code></td></tr>
+    <tr><td>05</td><td><code>______</code></td></tr>
+    <tr><td>06</td><td><code>______</code></td></tr>
+    <tr><td>07</td><td><code>______</code></td></tr>
+    <tr><td>08</td><td><code>______</code></td></tr>
+    <tr><td>09</td><td><code>______</code></td></tr>
+    <tr><td>10</td><td><code>______</code></td></tr>
+    <tr><td>11</td><td><code>______</code></td></tr>
+    <tr><td>12</td><td><code>______</code></td></tr>
+    <tr><td>13</td><td><code>______</code></td></tr>
+    <tr><td>14</td><td><code>______</code></td></tr>
+    <tr><td>15</td><td><code>______</code></td></tr>
+    <tr><td>16</td><td><code>______</code></td></tr>
+    <tr><td>17</td><td><code>______</code></td></tr>
+    <tr><td>18</td><td><code>______</code></td></tr>
+    <tr><td>19</td><td><code>______</code></td></tr>
+    <tr><td>20</td><td><code>______</code></td></tr>
+    <tr><td>21</td><td><code>______</code></td></tr>
+    <tr><td>22</td><td><code>______</code></td></tr>
+    <tr><td>23</td><td><code>______</code></td></tr>
+  </table>
+
+  <h2>5) Defense strategy evidence (SOAR / Rule suggestion)</h2>
+  <table>
+    <tr><th>#</th><th>Rule/Condition</th><th>Gợi ý phòng thủ</th><th>Kết quả</th></tr>
+    <tr><td>1</td><td><code>IF brute force ...</code></td><td><code>__________</code></td><td>OK/FAIL</td></tr>
+    <tr><td>2</td><td><code>__________</code></td><td><code>__________</code></td><td>OK/FAIL</td></tr>
+    <tr><td>3</td><td><code>__________</code></td><td><code>__________</code></td><td>OK/FAIL</td></tr>
+  </table>
+
+  <h2>6) Artifact checklist</h2>
+  <ul>
+    <li>Ảnh chụp STATUS BAR có ingestion rate/alert rate/model version/dataset version.</li>
+    <li>Ảnh chụp Attack Timeline (Last 24 hours).</li>
+    <li>Ảnh chụp Kibana Discover / index <code>ml-alerts-*</code> có records.</li>
+    <li>Trích đoạn 5-10 dòng từ <code>data/predictions.csv</code>.</li>
+    <li>Ghi chú nếu ES writer thất bại (error message + cách khắc phục).</li>
+  </ul>
+</body>
+</html>
+

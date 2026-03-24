@@ -53,8 +53,17 @@ def strip_html(html):
     return text
 
 def main():
-    html_path = os.path.join(SCRIPT_DIR, "DU_KIEN_DATASET_VA_PHAT_TRIEN.html")
-    docx_path = os.path.join(SCRIPT_DIR, "DU_KIEN_DATASET_VA_PHAT_TRIEN.docx")
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Convert HTML to Word (.docx)")
+    parser.add_argument("--input", dest="html_path", default=os.path.join(SCRIPT_DIR, "DU_KIEN_DATASET_VA_PHAT_TRIEN.html"),
+                        help="Path to input HTML file")
+    parser.add_argument("--output", dest="docx_path", default=os.path.join(SCRIPT_DIR, "DU_KIEN_DATASET_VA_PHAT_TRIEN.docx"),
+                        help="Path to output DOCX file")
+    args = parser.parse_args()
+
+    html_path = args.html_path
+    docx_path = args.docx_path
 
     if not os.path.exists(html_path):
         print("Khong tim thay:", html_path)

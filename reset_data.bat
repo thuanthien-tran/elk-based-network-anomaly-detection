@@ -6,7 +6,8 @@ echo ========================================
 echo RESET DATA - ELKShield Project
 echo ========================================
 echo.
-echo [WARNING] This will delete all test-logs-* and ml-alerts-* indices!
+echo [WARNING] This will delete source + alert indices:
+echo           test-logs-*, ssh-logs-*, filebeat-*, logstash-*, logs-*, ml-alerts-*
 echo.
 
 set /p confirm="Are you sure? (yes/no): "
@@ -17,44 +18,54 @@ if /i not "%confirm%"=="yes" (
 )
 
 echo.
-echo [1/5] Listing current indices...
-curl -s http://127.0.0.1:9200/_cat/indices?v | findstr /i "test-logs ml-alerts"
+echo [1/6] Listing current indices...
+curl -s http://127.0.0.1:9200/_cat/indices?v | findstr /i "test-logs ssh-logs filebeat logstash logs ml-alerts"
 echo.
 
-echo [2/5] Deleting test-logs-* indices...
-REM Get list of indices matching pattern and delete each
-for /f "tokens=3" %%i in ('curl -s "http://127.0.0.1:9200/_cat/indices/test-logs-*?v^&h=index"') do (
-    echo   Deleting index: %%i
-    curl -X DELETE "http://127.0.0.1:9200/%%i" >nul 2>&1
+echo [2/6] Deleting indices by patterns...
+setlocal EnableDelayedExpansion
+set "ANY_DELETED=0"
+for /f "usebackq delims=" %%I in (`curl -s "http://127.0.0.1:9200/_cat/indices?h=index" ^| findstr /r /i "^test-logs- ^ssh-logs- ^filebeat- ^logstash- ^logs- ^ml-alerts-"`) do (
+    set "IDX=%%I"
+    if not "!IDX!"=="" (
+        echo   Deleting index: !IDX!
+        curl -s -X DELETE "http://127.0.0.1:9200/!IDX!" >nul 2>&1
+        set "ANY_DELETED=1"
+    )
 )
-echo [OK] test-logs-* indices deleted
-echo.
-
-echo [3/5] Deleting ml-alerts-* indices...
-for /f "tokens=3" %%i in ('curl -s "http://127.0.0.1:9200/_cat/indices/ml-alerts-*?v^&h=index"') do (
-    echo   Deleting index: %%i
-    curl -X DELETE "http://127.0.0.1:9200/%%i" >nul 2>&1
+if "!ANY_DELETED!"=="1" (
+    echo [OK] Matching indices deleted
+) else (
+    echo [SKIP] No matching indices found
 )
-echo [OK] ml-alerts-* indices deleted
 echo.
 
-echo [4/6] Verifying deletion...
+echo [3/6] Verifying deletion...
 timeout /t 2 /nobreak >nul
-curl -s http://127.0.0.1:9200/_cat/indices?v | findstr /i "test-logs ml-alerts"
+curl -s http://127.0.0.1:9200/_cat/indices?v | findstr /i "test-logs ssh-logs filebeat logstash logs ml-alerts"
 if %ERRORLEVEL% EQU 0 (
     echo [WARNING] Some indices still exist!
 ) else (
-    echo [OK] All test-logs-* and ml-alerts-* indices deleted
+    echo [OK] All matching source + alert indices deleted
 )
 echo.
 
-echo [5/6] Cleaning old CSV files...
+echo [4/6] Cleaning old CSV files...
 if exist "data\raw\logs.csv" del /q "data\raw\logs.csv"
 if exist "data\processed\logs.csv" del /q "data\processed\logs.csv"
 if exist "data\predictions.csv" del /q "data\predictions.csv"
 if exist "data\processed\predictions_demo.csv" del /q "data\processed\predictions_demo.csv"
 if exist "data\processed\logs_with_ml.csv" del /q "data\processed\logs_with_ml.csv"
 echo [OK] CSV files cleaned
+echo.
+
+echo [5/6] Xoa registry Filebeat (config\filebeat\data)...
+if exist "config\filebeat\data" (
+    rmdir /s /q "config\filebeat\data"
+    echo [OK] config\filebeat\data deleted
+) else (
+    echo [SKIP] config\filebeat\data not found
+)
 echo.
 
 echo [6/6] ML model (data\models\*.joblib, ml_models\*.pkl)...

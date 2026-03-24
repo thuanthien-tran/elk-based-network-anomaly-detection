@@ -49,8 +49,25 @@ def parse_table(lines):
     return rows
 
 def main():
-    md_path = os.path.join(SCRIPT_DIR, "BAO_CAO_TIEN_DO.md")
-    docx_path = os.path.join(SCRIPT_DIR, "BAO_CAO_TIEN_DO.docx")
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Chuyen file Markdown sang Word (.docx)")
+    parser.add_argument(
+        "--input",
+        dest="md_path",
+        default=os.path.join(SCRIPT_DIR, "BAO_CAO_TIEN_DO.md"),
+        help="Duong dan file .md",
+    )
+    parser.add_argument(
+        "--output",
+        dest="docx_path",
+        default=os.path.join(SCRIPT_DIR, "BAO_CAO_TIEN_DO.docx"),
+        help="Duong dan file .docx",
+    )
+    args = parser.parse_args()
+
+    md_path = args.md_path
+    docx_path = args.docx_path
 
     if not os.path.exists(md_path):
         print("Khong tim thay:", md_path)

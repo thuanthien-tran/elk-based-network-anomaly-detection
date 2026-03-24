@@ -45,6 +45,67 @@ def normalize_df(df):
     return out
 
 
+def rebalance_unified(df: pd.DataFrame, target_attack_ratio: float = 0.6, seed: int = 42) -> pd.DataFrame:
+    """
+    Rebalance unified dataset by downsampling attack rows only.
+    Strategy: keep all normal rows, reduce attack-heavy sources first (Kaggle).
+    """
+    if "is_attack" not in df.columns:
+        return df
+    if "_source" not in df.columns:
+        df["_source"] = "Unknown"
+
+    work = df.copy()
+    work["is_attack"] = work["is_attack"].astype(bool)
+
+    n_attack = int(work["is_attack"].sum())
+    n_total = len(work)
+    n_normal = n_total - n_attack
+    if n_total <= 0 or n_normal <= 0:
+        return work
+
+    target_attack = int(round((target_attack_ratio * n_normal) / max(1e-9, (1.0 - target_attack_ratio))))
+    if n_attack <= target_attack:
+        return work
+
+    attack_df = work[work["is_attack"]].copy()
+    normal_df = work[~work["is_attack"]].copy()
+    drop_need = n_attack - target_attack
+
+    # Drop attacks mostly from Kaggle first, then Synthetic, then Custom, then Russell.
+    drop_priority = ["Kaggle", "Synthetic", "Custom", "Russell Mitchell"]
+    keep_attack_parts = []
+    rng_state = seed
+    remaining_drop = drop_need
+    remaining_attack = attack_df.copy()
+
+    for src in drop_priority:
+        src_rows = remaining_attack[remaining_attack["_source"] == src]
+        if src_rows.empty:
+            continue
+        if remaining_drop <= 0:
+            break
+        can_drop = min(len(src_rows), remaining_drop)
+        keep_src = src_rows.sample(n=(len(src_rows) - can_drop), random_state=rng_state) if can_drop < len(src_rows) else src_rows.iloc[0:0]
+        keep_attack_parts.append(keep_src)
+        remaining_drop -= can_drop
+        remaining_attack = remaining_attack[remaining_attack["_source"] != src]
+        rng_state += 1
+
+    # Keep all non-priority attack rows.
+    if not remaining_attack.empty:
+        keep_attack_parts.append(remaining_attack)
+
+    keep_attack = pd.concat(keep_attack_parts, ignore_index=True) if keep_attack_parts else attack_df.iloc[0:0]
+
+    # Safety fallback: exact target by random sample if still above target.
+    if len(keep_attack) > target_attack:
+        keep_attack = keep_attack.sample(n=target_attack, random_state=seed)
+
+    out = pd.concat([normal_df, keep_attack], ignore_index=True)
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser(description="Gộp các dataset SSH đã preprocess thành unified training dataset (Synthetic, Russell, Kaggle, Custom).")
     parser.add_argument("--synthetic", default=None,
@@ -57,6 +118,18 @@ def main():
                         help="CSV đã preprocess từ tệp tùy chọn (mặc định: data/processed/custom_processed.csv). Bỏ qua nếu không tồn tại.")
     parser.add_argument("--output", "-o", default=None,
                         help="Unified CSV (mặc định: data/training/unified_ssh_dataset.csv)")
+    parser.add_argument(
+        "--balance-mode",
+        choices=["off", "moderate"],
+        default="moderate",
+        help="Can bang sau khi gop (mac dinh: moderate)",
+    )
+    parser.add_argument(
+        "--target-attack-ratio",
+        type=float,
+        default=0.60,
+        help="Ty le attack muc tieu khi can bang moderate (mac dinh: 0.60)",
+    )
     args = parser.parse_args()
 
     root = PROJECT_ROOT
@@ -98,6 +171,19 @@ def main():
         sys.exit(1)
 
     unified = pd.concat(frames, ignore_index=True)
+
+    # Rebalance after merge (default: moderate -> target attack ratio ~60%).
+    if args.balance_mode == "moderate":
+        before_total = len(unified)
+        before_attack = int(unified["is_attack"].astype(bool).sum()) if "is_attack" in unified.columns else 0
+        unified = rebalance_unified(unified, target_attack_ratio=args.target_attack_ratio, seed=42)
+        after_total = len(unified)
+        after_attack = int(unified["is_attack"].astype(bool).sum()) if "is_attack" in unified.columns else 0
+        print(
+            f"  Rebalance(moderate): {before_total} -> {after_total} dong, "
+            f"Attack {before_attack} -> {after_attack}"
+        )
+
     unified = unified.drop(columns=["_source"], errors="ignore")
     # Sắp xếp theo thời gian nếu có
     if "timestamp" in unified.columns:
@@ -105,6 +191,7 @@ def main():
         unified = unified.sort_values("timestamp").reset_index(drop=True)
     unified.to_csv(out_path, index=False)
     n_attack = unified["is_attack"].sum() if "is_attack" in unified.columns else 0
+    n_attack = int(n_attack)
     print(f"\nDa gop {len(unified)} dong -> {out_path}")
     print(f"  Normal: {len(unified) - n_attack}, Attack: {n_attack}")
     # Log ro nhung dataset da duoc dua vao unified

@@ -4,6 +4,8 @@ filebeat.inputs:
     enabled: true
     paths:
       - C:/Users/thuan/Documents/test.log
+    prospector.scanner.fingerprint.offset: 0
+    prospector.scanner.fingerprint.length: 64
     fields:
       log_type: ssh
     fields_under_root: false

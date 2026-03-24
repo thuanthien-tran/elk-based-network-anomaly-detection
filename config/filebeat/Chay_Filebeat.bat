@@ -16,6 +16,19 @@ echo.
 echo  Filebeat: doc %LOGFILE% --^> Logstash :5044 --^> Elasticsearch
 echo  Giu cua so nay MO. Dong cua so = dung Filebeat.
 echo.
+for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"') do set "RUN_TS=%%i"
+set "FB_DATA=%~dp0data-runs\%RUN_TS%"
+set "FB_LOGS=%~dp0logs"
+if not exist "%FB_DATA%" mkdir "%FB_DATA%" >nul 2>&1
+if not exist "%FB_LOGS%" mkdir "%FB_LOGS%" >nul 2>&1
+echo  Filebeat data path: %FB_DATA%
+echo  Filebeat logs path: %FB_LOGS%
+echo  Run ID: %RUN_TS%
+echo.
+
+REM Restart-safe: kill any stale Filebeat process that may keep registry lock.
+taskkill /IM filebeat.exe /F >nul 2>&1
+timeout /t 1 /nobreak >nul
 
 REM Kiem tra file log ton tai
 if not exist "%LOGFILE%" (
@@ -37,16 +50,19 @@ if errorlevel 1 (
 
 where filebeat >nul 2>&1
 if %errorlevel% equ 0 (
-    filebeat -e -c "%CONFIG%"
+    echo  Dang khoi dong Filebeat...
+    filebeat run -e -c "%CONFIG%" --path.data "%FB_DATA%" --path.logs "%FB_LOGS%"
     goto :done
 )
 where filebeat.exe >nul 2>&1
 if %errorlevel% equ 0 (
-    filebeat.exe -e -c "%CONFIG%"
+    echo  Dang khoi dong Filebeat...
+    filebeat.exe run -e -c "%CONFIG%" --path.data "%FB_DATA%" --path.logs "%FB_LOGS%"
     goto :done
 )
 if exist "%~dp0filebeat.exe" (
-    "%~dp0filebeat.exe" -e -c "%CONFIG%"
+    echo  Dang khoi dong Filebeat...
+    "%~dp0filebeat.exe" run -e -c "%CONFIG%" --path.data "%FB_DATA%" --path.logs "%FB_LOGS%"
     goto :done
 )
 

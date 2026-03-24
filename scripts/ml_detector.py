@@ -45,9 +45,21 @@ class NetworkAnomalyDetector:
         
         # Convert timestamp to datetime
         if 'timestamp' in df_processed.columns:
-            df_processed['timestamp'] = pd.to_datetime(df_processed['timestamp'])
-            df_processed['hour'] = df_processed['timestamp'].dt.hour
-            df_processed['day_of_week'] = df_processed['timestamp'].dt.dayofweek
+            # ES/Filebeat data can contain mixed timestamp formats (with/without microseconds,
+            # timezone suffixes like Z or +00:00). Parse robustly to avoid runtime failures.
+            ts = pd.to_datetime(
+                df_processed['timestamp'],
+                errors='coerce',
+                utc=True,
+                format='mixed',
+            )
+            invalid_ts = int(ts.isna().sum())
+            if invalid_ts:
+                print(f"[WARN] timestamp parse failed for {invalid_ts} rows; fallback feature values will be used.")
+            # Store as naive UTC for compatibility with downstream processing/sorting.
+            df_processed['timestamp'] = ts.dt.tz_convert(None)
+            df_processed['hour'] = ts.dt.hour.fillna(0).astype(int)
+            df_processed['day_of_week'] = ts.dt.dayofweek.fillna(0).astype(int)
             df_processed['is_weekend'] = (df_processed['day_of_week'] >= 5).astype(int)
         
         # Hash IP addresses instead of encoding (to avoid false relationships)
