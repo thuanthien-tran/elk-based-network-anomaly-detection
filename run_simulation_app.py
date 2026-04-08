@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 ELKShield - ứng dụng desktop mô phỏng (SOC dashboard).
 Chạy: python run_simulation_app.py
@@ -43,7 +43,10 @@ try:
         QTableWidgetItem,
         QAbstractItemView,
         QSizePolicy,
-    )
+        QSplitter,
+        QDialog,
+        QFileDialog,
+    )   
     from PySide6.QtCore import Qt, QTimer, Signal
     from PySide6.QtGui import QColor, QFont, QPainter
     HAS_QT = True
@@ -778,6 +781,13 @@ def write_incident_report(
         total_records_i = int(total_records or 0)
         ml_count_i = int(ml_count or 0)
         rule_count_i = int(rule_count or 0)
+        try:
+            from scripts.defense_recommendations import get_recommendations as _get_recommendations
+        except Exception:
+            try:
+                from defense_recommendations import get_recommendations as _get_recommendations
+            except Exception:
+                _get_recommendations = None
 
         def _clean_text(v):
             s = str(v or "").strip()
@@ -799,7 +809,9 @@ def write_incident_report(
         is_fallback = "fallback" in str(report_source or "").lower()
         run_index_value = _clean_text(run_index_pattern)
         if is_fallback:
-            run_index_value = run_index_value or "N/A (fallback mode)"
+            # In fallback mode, wildcard run-index is not a reliable concrete run reference.
+            if (not run_index_value) or ("*" in run_index_value):
+                run_index_value = "N/A (fallback mode)"
 
         if ml_count_i > 0:
             severity = "high" if ml_count_i >= max(3, total_records_i // 5) else "medium"
@@ -807,30 +819,53 @@ def write_incident_report(
             severity = "low"
         else:
             severity = "info"
+        action_status = "Hành động ngay" if ml_count_i > 0 else ("Theo dõi tăng cường" if rule_count_i > 0 else "Tiếp tục giám sát")
 
         if ml_count_i > 0:
-            executive_conclusion = f"ML detected {ml_count_i} anomalous events; investigate immediately."
+            executive_conclusion = f"ML phát hiện {ml_count_i} sự kiện bất thường; cần điều tra ngay."
         elif rule_count_i > 0:
-            executive_conclusion = "No ML anomaly detected; rule-based suspicious activity observed."
+            executive_conclusion = "Chưa có bất thường theo ML; có dấu hiệu nghi ngờ theo rule."
         else:
-            executive_conclusion = "No suspicious activity detected in current report scope."
+            executive_conclusion = "Không phát hiện hoạt động nghi ngờ trong phạm vi dữ liệu hiện tại."
 
         data_scope = "preview_10_records" if total_records_i <= 10 else "expanded_records"
         if is_fallback:
             data_scope += "_from_predictions_csv"
+        analysis_scope_note = (
+            "Kết luận dựa trên dữ liệu preview. Nên kiểm tra thêm cửa sổ dữ liệu lớn hơn trước khi chốt quyết định."
+            if total_records_i <= 10
+            else "Kết luận dựa trên dữ liệu mở rộng trong phạm vi lần chạy hiện tại."
+        )
+        if ml_count_i > 0:
+            confidence = "high"
+        elif rule_count_i > 0:
+            confidence = "medium"
+        else:
+            confidence = "low"
 
         normalized_alerts = []
         for a in (top_alerts or []):
+            at = _clean_text(a.get("attack_type")) or "unknown"
+            rec_text = _clean_text(a.get("defense_recommendations"))
+            if rec_text.lower() in ("", "no recommendation in this record."):
+                if _get_recommendations:
+                    try:
+                        rec_items = _get_recommendations(at, "high")
+                        rec_text = "; ".join([t for t, _ in rec_items[:3]]) if rec_items else rec_text
+                    except Exception:
+                        pass
+            if not rec_text:
+                rec_text = "Review source logs, verify anomaly context, and apply targeted containment."
             normalized_alerts.append(
                 {
                     "timestamp": _clean_text(a.get("timestamp")) or "unknown",
                     "source_ip": _clean_text(a.get("source_ip")) or "unknown",
-                    "attack_type": _clean_text(a.get("attack_type")) or "unknown",
+                    "attack_type": at,
                     "ml_model": _clean_text(a.get("ml_model")) or _clean_text(model_name) or "unknown",
                     "ml_anomaly_score": _to_float_or_none(a.get("ml_anomaly_score")),
                     "ml_label": _clean_text(a.get("ml_label")) or "unknown",
                     "rule_label": _clean_text(a.get("rule_label")) or "unknown",
-                    "defense_recommendations": _clean_text(a.get("defense_recommendations")) or "No recommendation in this record.",
+                    "defense_recommendations": rec_text,
                 }
             )
 
@@ -840,28 +875,29 @@ def write_incident_report(
         ]
         if not normalized_checklist:
             normalized_checklist = [
-                "Review source logs and validate parsing pipeline.",
-                "Correlate suspicious IPs with firewall/SSH auth logs.",
-                "Run detection again with a larger data window before final conclusion.",
+                "Kiểm tra log nguồn và xác nhận pipeline parse hoạt động đúng.",
+                "Đối chiếu IP/cụm nghi ngờ với log SSH/firewall trong cùng khung thời gian.",
+                "Mở rộng cửa sổ dữ liệu và chạy lại detection trước khi chốt kết luận.",
             ]
 
+        # Next actions should align with action_status to keep lecturer-friendly consistency.
         next_actions = []
-        if ml_count_i > 0:
+        if action_status == "Hành động ngay":
             next_actions.extend([
-                "Open Alert Feed and inspect Top-3 alerts by anomaly score.",
-                "Apply temporary mitigation for top suspicious IPs.",
-                "Export evidence (logs + predictions + this report) for review.",
+                "Mở mục Alert Feed/Kibana để xem Top-3 theo ml_anomaly_score và @timestamp.",
+                "Ưu tiên containment tạm thời cho IP/nhóm nghi ngờ nổi bật (theo đề xuất defense).",
+                "Lưu bằng chứng: logs + predictions + incident report để đối chiếu sau xử lý.",
             ])
-        elif rule_count_i > 0:
+        elif action_status == "Theo dõi tăng cường":
             next_actions.extend([
-                "Treat as early warning and monitor the same IPs closely.",
-                "Verify whether rules are too sensitive for this traffic profile.",
-                "Re-run detection after collecting more recent logs.",
+                "Xác minh lại parser và rule-based warning (để hạn chế cảnh báo giả).",
+                "Theo dõi IP nổi bật trong 30-60 phút và đối chiếu với log SSH/firewall trong cùng khung thời gian.",
+                "Mở rộng cửa sổ dữ liệu và chạy lại detection trước khi kết luận cuối cùng.",
             ])
         else:
             next_actions.extend([
-                "Keep monitoring and collect more data for the next run.",
-                "Validate Filebeat/Logstash ingestion continuity.",
+                "Tiếp tục giám sát và thu thập thêm dữ liệu cho lần chạy tiếp theo.",
+                "Kiểm tra ingestion (Filebeat/Logstash) để đảm bảo không thiếu sự kiện mới.",
             ])
 
         report_dir = ROOT / "report"
@@ -876,7 +912,10 @@ def write_incident_report(
             "decision": decision,
             "executive_conclusion": executive_conclusion,
             "severity": severity,
+            "confidence": confidence,
+            "action_status": action_status,
             "data_scope": data_scope,
+            "analysis_scope_note": analysis_scope_note,
             "summary": {
                 "records": total_records_i,
                 "ml_anomalies": ml_count_i,
@@ -887,6 +926,10 @@ def write_incident_report(
             "next_actions": next_actions,
         }
         with open(report_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        # Keep a stable pointer for quick access during demo/review.
+        latest_path = report_dir / "latest_incident.json"
+        with open(latest_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         return True, str(report_path)
     except Exception as e:
@@ -1061,6 +1104,9 @@ if HAS_QT:
             self.msg_queue = queue.Queue()
             self.selected_action = None
             self.action_buttons = []
+            # Track manual log writing in "Log thủ công" popup.
+            # Requirement: first write creates, second write overwrites previous log.
+            self._manual_log_write_count = 0
 
             # Layout constants (gá»n)
             _MARGIN = 10
@@ -1226,6 +1272,15 @@ if HAS_QT:
             )
             self.btn_clear_attack_table.clicked.connect(self._clear_attack_table_qt)
             timeline_head.addWidget(self.btn_clear_attack_table)
+            self.btn_expand_log = QPushButton("Phóng to log")
+            self.btn_expand_log.setFixedHeight(22)
+            self.btn_expand_log.setStyleSheet(
+                f"QPushButton {{ background-color: transparent; color: {_TEXT_MUTED}; border: 1px solid {_BORDER}; "
+                f"border-radius: 6px; font-size: 10px; padding: 1px 6px; }} "
+                f"QPushButton:hover {{ color: {_TEXT}; border-color: {_TEXT_MUTED}; background-color: {_BG_CARD}; }}"
+            )
+            self.btn_expand_log.clicked.connect(self._open_log_viewer_qt)
+            timeline_head.addWidget(self.btn_expand_log)
             term_inner.addLayout(timeline_head)
             self.chart_container = QWidget()
             chart_layout = QVBoxLayout(self.chart_container)
@@ -1238,14 +1293,24 @@ if HAS_QT:
             self.chart_view = None
             # Preserve current Attack Hourly Table once (used after Reset dữ liệu).
             self._preserve_attack_table_once = False
-            term_inner.addWidget(self.chart_container)
             self.txt = QPlainTextEdit()
             self.txt.setReadOnly(True)
+            # Keep long log lines readable with horizontal scroll.
+            self.txt.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+            self.txt.setMinimumHeight(240)
             self.txt.setPlainText(
                 "Chọn thao tác (bấm nút ở 4 cột bên dưới) rồi bấm ▶ Start Security Workflow. Kết quả hiển thị ở đây."
             )
-            term_inner.addWidget(self.txt)
-            top_row.addWidget(term_card, 2)
+            # Splitter lets users manually expand/collapse chart vs terminal log area.
+            self.terminal_splitter = QSplitter(Qt.Orientation.Vertical)
+            self.terminal_splitter.addWidget(self.chart_container)
+            self.terminal_splitter.addWidget(self.txt)
+            self.terminal_splitter.setChildrenCollapsible(False)
+            self.terminal_splitter.setStretchFactor(0, 1)
+            self.terminal_splitter.setStretchFactor(1, 3)
+            self.terminal_splitter.setSizes([140, 320])
+            term_inner.addWidget(self.terminal_splitter, 1)
+            top_row.addWidget(term_card, 3)
 
             main_layout.addLayout(top_row)
 
@@ -1291,7 +1356,6 @@ if HAS_QT:
             four_cols = QHBoxLayout()
             four_cols.setSpacing(_CARD_GAP)
             four_cols.addWidget(add_card("", "System Control", _COLOR_SETUP, [
-                ("Start SIEM", "Start SIEM"),
                 ("Reset Data", "1. Reset dữ liệu (xóa index)"),
                 ("Start/Restart Filebeat", "2. Má»Ÿ Filebeat (cá»­a sá»• má»›i)"),
             ]))
@@ -1300,6 +1364,7 @@ if HAS_QT:
                 ("Custom CSV", "6.2 Train Custom CSV"),
             ]))
             four_cols.addWidget(add_card("", "Detection Pipeline", _COLOR_DETECTION, [
+                ("Start SIEM", "Start SIEM"),
                 ("Run Detection", "7. Detection online (→ ml-alerts)"),
             ]))
             four_cols.addWidget(add_card("", "Threat Intelligence", _COLOR_MONITORING, [
@@ -1389,9 +1454,9 @@ if HAS_QT:
             bottom_bar.addStretch()
             log_row = QHBoxLayout()
             log_row.setSpacing(6)
-            self.btn_toggle_log = QPushButton("Ghi log")
+            self.btn_toggle_log = QPushButton("Log thủ công")
             self.btn_toggle_log.setFixedHeight(_BTN_HEIGHT)
-            self.btn_toggle_log.setFixedWidth(70)
+            self.btn_toggle_log.setFixedWidth(95)
             self.btn_toggle_log.setStyleSheet(
                 f"QPushButton {{ background-color: {_BORDER}; color: {_TEXT}; border: 1px solid {_TEXT_MUTED}; "
                 f"border-radius: {_BTN_RADIUS}px; }} QPushButton:hover {{ background-color: {_TEXT_MUTED}; color: {_BG_DARK}; }}"
@@ -1423,12 +1488,6 @@ if HAS_QT:
             )
             self.btn_do_write.clicked.connect(self._on_write_log_qt)
             panel.addWidget(self.btn_do_write)
-            self.frame_log_panel.setVisible(False)
-            log_row.addWidget(self.frame_log_panel)
-
-            self.lbl_testlog_status = QLabel("—")
-            self.lbl_testlog_status.setStyleSheet(f"color: {_TEXT_MUTED}; font-size: 10px;")
-            log_row.addWidget(self.lbl_testlog_status)
             self.btn_open_testlog = QPushButton("Mở log")
             self.btn_open_testlog.setFixedHeight(_BTN_HEIGHT)
             self.btn_open_testlog.setFixedWidth(70)
@@ -1437,7 +1496,22 @@ if HAS_QT:
                 f"border-radius: {_BTN_RADIUS}px; font-size: 10px; }} QPushButton:hover {{ background-color: {_TEXT_MUTED}; color: {_BG_DARK}; }}"
             )
             self.btn_open_testlog.clicked.connect(self._on_open_testlog_qt)
-            log_row.addWidget(self.btn_open_testlog)
+            panel.addWidget(self.btn_open_testlog)
+            self.frame_log_panel.setVisible(False)
+            log_row.addWidget(self.frame_log_panel)
+
+            self.lbl_testlog_status = QLabel("—")
+            self.lbl_testlog_status.setStyleSheet(f"color: {_TEXT_MUTED}; font-size: 10px;")
+            log_row.addWidget(self.lbl_testlog_status)
+            self.btn_import_log = QPushButton("Chọn log có sẵn")
+            self.btn_import_log.setFixedHeight(_BTN_HEIGHT)
+            self.btn_import_log.setFixedWidth(120)
+            self.btn_import_log.setStyleSheet(
+                f"QPushButton {{ background-color: {_BORDER}; color: {_TEXT}; border: 1px solid {_TEXT_MUTED}; "
+                f"border-radius: {_BTN_RADIUS}px; font-size: 10px; }} QPushButton:hover {{ background-color: {_TEXT_MUTED}; color: {_BG_DARK}; }}"
+            )
+            self.btn_import_log.clicked.connect(self._on_import_log_qt)
+            log_row.addWidget(self.btn_import_log)
             bottom_bar.addLayout(log_row)
             main_layout.addLayout(bottom_bar)
 
@@ -1466,17 +1540,96 @@ if HAS_QT:
                 self.lbl_testlog_status.setToolTip(str(p))
 
         def _toggle_log_panel_qt(self):
+            """Open popup dialog to enter manual log counts."""
             try:
-                visible = not self.frame_log_panel.isVisible()
-                self.frame_log_panel.setVisible(visible)
-                if visible:
-                    self.btn_toggle_log.setText("Hủy")
-                    self.spin_normal.setFocus()
-                    self.spin_normal.selectAll()
-                else:
-                    self.btn_toggle_log.setText("Ghi log")
-            except Exception:
-                pass
+                dlg = QDialog(self)
+                dlg.setWindowTitle("Log thủ công")
+                dlg.setModal(True)
+                dlg_layout = QVBoxLayout(dlg)
+                dlg_layout.setContentsMargins(12, 12, 12, 12)
+                dlg_layout.setSpacing(8)
+
+                row_normal = QHBoxLayout()
+                row_normal.addWidget(QLabel("Số dòng Normal:"))
+                inp_normal = QLineEdit()
+                inp_normal.setText("2")
+                inp_normal.setFixedWidth(80)
+                row_normal.addWidget(inp_normal)
+                row_normal.addStretch()
+                dlg_layout.addLayout(row_normal)
+
+                row_attack = QHBoxLayout()
+                row_attack.addWidget(QLabel("Số dòng Attack:"))
+                inp_attack = QLineEdit()
+                inp_attack.setText("5")
+                inp_attack.setFixedWidth(80)
+                row_attack.addWidget(inp_attack)
+                row_attack.addStretch()
+                dlg_layout.addLayout(row_attack)
+
+                btn_row = QHBoxLayout()
+                btn_row.addStretch()
+                btn_cancel = QPushButton("Hủy")
+                btn_ok = QPushButton("Ghi log")
+                btn_clear = QPushButton("Xóa log hiện tại")
+                btn_cancel.clicked.connect(dlg.reject)
+
+                def _clear_current_log():
+                    try:
+                        import tempfile
+                        user = os.environ.get("USERPROFILE") or os.environ.get("HOME") or tempfile.gettempdir()
+                        doc_log = get_testlog_path()
+                        desk_log = Path(user) / "Desktop" / "test.log"
+                        for p in [doc_log, desk_log]:
+                            try:
+                                p.parent.mkdir(parents=True, exist_ok=True)
+                                p.write_text("", encoding="utf-8")
+                            except Exception:
+                                pass
+                        self._manual_log_write_count = 0
+                        self._update_testlog_status_qt()
+                        self._log_qt("Đã xóa log hiện tại (test.log).")
+                    except Exception as e:
+                        self._log_qt("Không xóa được test.log: " + str(e), is_error=True)
+
+                btn_clear.clicked.connect(_clear_current_log)
+
+                def _accept_and_write():
+                    try:
+                        n = int((inp_normal.text() or "").strip() or "0")
+                        a = int((inp_attack.text() or "").strip() or "0")
+                        if n < 0 or a < 0:
+                            self._log_qt("Số dòng phải >= 0.")
+                            return
+                    except ValueError:
+                        self._log_qt("Nhập số nguyên cho normal và attack.")
+                        return
+                    prev_count = int(getattr(self, "_manual_log_write_count", 0) or 0)
+                    overwrite_note = " (ghi đè lần trước)" if prev_count >= 1 else ""
+                    written = write_sample_log(n, a)
+                    if written:
+                        self._manual_log_write_count = prev_count + 1
+                        if overwrite_note:
+                            self._log_qt(f"Đã ghi {n + a} dòng vào test.log{overwrite_note}.")
+                        else:
+                            self._log_qt(f"Đã ghi {n + a} dòng vào test.log (lần đầu).")
+                        self._log_qt("Đã ghi " + str(n + a) + " dòng vào:\n" + "\n".join(written))
+                    else:
+                        self._log_qt("Không ghi được file.", is_error=True)
+                    self._update_testlog_status_qt()
+                    dlg.accept()
+
+                btn_ok.clicked.connect(_accept_and_write)
+                btn_row.addWidget(btn_cancel)
+                btn_row.addWidget(btn_clear)
+                btn_row.addWidget(btn_ok)
+                dlg_layout.addLayout(btn_row)
+
+                inp_normal.setFocus()
+                inp_normal.selectAll()
+                dlg.exec()
+            except Exception as e:
+                self._log_qt("Không mở được popup Log thủ công: " + str(e), is_error=True)
 
         def _on_open_testlog_qt(self):
             p = get_testlog_path()
@@ -1598,6 +1751,35 @@ if HAS_QT:
                         f"color: {_TEXT_MUTED}; font-size: 10px; background: {_BG_DARK}; border-radius: 6px; padding: 8px;"
                     )
                     self.chart_container.layout().addWidget(lbl)
+            except Exception:
+                pass
+
+        def _open_log_viewer_qt(self):
+            """Open a full-screen log viewer and keep it synced."""
+            try:
+                if getattr(self, "_log_dialog", None) is None:
+                    dlg = QDialog(self)
+                    dlg.setWindowTitle("Terminal Output - Full Screen")
+                    dlg.resize(1200, 800)
+                    layout = QVBoxLayout(dlg)
+                    layout.setContentsMargins(8, 8, 8, 8)
+                    viewer = QPlainTextEdit()
+                    viewer.setReadOnly(True)
+                    viewer.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+                    viewer.setStyleSheet(
+                        f"QPlainTextEdit {{ background-color: {_BG_DARK}; color: {_TEXT}; border: 1px solid {_BORDER}; border-radius: 8px; }}"
+                    )
+                    viewer.setPlainText(self.txt.toPlainText() if hasattr(self, "txt") else "")
+                    layout.addWidget(viewer)
+                    self._log_dialog = dlg
+                    self._log_viewer = viewer
+                else:
+                    # Ensure viewer shows latest content if dialog reopened.
+                    if getattr(self, "_log_viewer", None) is not None and hasattr(self, "txt"):
+                        self._log_viewer.setPlainText(self.txt.toPlainText())
+                self._log_dialog.showMaximized()
+                self._log_dialog.raise_()
+                self._log_dialog.activateWindow()
             except Exception:
                 pass
 
@@ -1933,6 +2115,10 @@ if HAS_QT:
         def _append_log_qt(self, text, is_error):
             self.txt.appendPlainText((text or "") + "\n")
             self.txt.verticalScrollBar().setValue(self.txt.verticalScrollBar().maximum())
+            viewer = getattr(self, "_log_viewer", None)
+            if viewer is not None:
+                viewer.appendPlainText((text or "") + "\n")
+                viewer.verticalScrollBar().setValue(viewer.verticalScrollBar().maximum())
 
         def _open_local_path_qt(self, target_path):
             try:
@@ -2033,9 +2219,45 @@ if HAS_QT:
             self._update_testlog_status_qt()
             try:
                 self.frame_log_panel.setVisible(False)
-                self.btn_toggle_log.setText("Ghi log")
+                self.btn_toggle_log.setText("Log thủ công")
             except Exception:
                 pass
+
+        def _on_import_log_qt(self):
+            """Import an existing log file into test.log for Filebeat/demo."""
+            try:
+                src, _ = QFileDialog.getOpenFileName(
+                    self,
+                    "Chọn file log có sẵn",
+                    str(Path.home()),
+                    "Log files (*.log *.txt);;All files (*.*)",
+                )
+            except Exception as e:
+                self._log_qt("Không mở được hộp chọn file: " + str(e), is_error=True)
+                return
+            if not src:
+                return
+            src_path = Path(src)
+            if not src_path.exists():
+                self._log_qt("File không tồn tại: " + str(src_path), is_error=True)
+                return
+            try:
+                target = get_testlog_path()
+                target.parent.mkdir(parents=True, exist_ok=True)
+                # Overwrite test.log so Filebeat always reads the selected scenario file.
+                with open(src_path, "r", encoding="utf-8", errors="replace") as rf:
+                    content = rf.read()
+                with open(target, "w", encoding="utf-8", errors="replace") as wf:
+                    wf.write(content)
+                self._log_qt("Đã nạp log có sẵn vào test.log:\n" + str(src_path) + "\n=> " + str(target))
+                self._update_testlog_status_qt()
+                try:
+                    self.frame_log_panel.setVisible(False)
+                    self.btn_toggle_log.setText("Log thủ công")
+                except Exception:
+                    pass
+            except Exception as e:
+                self._log_qt("Không nạp được file log: " + str(e), is_error=True)
 
         def _do_action_qt(self, action):
             if action == "1. Reset dữ liệu (xóa index)":
@@ -2146,10 +2368,14 @@ if HAS_QT:
                         from elkshield.flow import run_monitoring_flow
                         ok, msg = run_monitoring_flow(
                             log_callback=lambda t, m, e: self.msg_queue.put((t, m, e)),
-                            open_browser=True,
+                            # Keep UI navigation consistent: after Start SIEM we open Index Management.
+                            open_browser=False,
                             write_test_log_first=True,
                         )
                         self.msg_queue.put(("log", "=== Hoàn tất: %s ===" % msg, not ok))
+                        # Align post-flow navigation with current UX decision.
+                        webbrowser.open("http://localhost:5601/app/management/data/index_management/indices")
+                        self.msg_queue.put(("log", "Đã mở Kibana Index Management (sau Start SIEM).", False))
                         # Report latest alerts directly in-app (avoid forcing user to open Kibana).
                         try:
                             ok2, msg2, alerts = fetch_latest_alerts_from_es(limit=10, index_pattern="ml-alerts-*")
@@ -2157,6 +2383,7 @@ if HAS_QT:
                                 if not alerts:
                                     self.msg_queue.put(("log", "Không có cảnh báo mới trong index ml-alerts-*.", False))
                                 else:
+                                    ml_attack_alerts = [a for a in alerts if _to_bool(a.get("ml_anomaly", False))]
                                     attack_alerts = [a for a in alerts if _to_bool(a.get("is_attack", False))]
                                     if attack_alerts:
                                         self.msg_queue.put(("log", f"=== Alerts Report: CÓ TẤN CÔNG ({len(attack_alerts)}/{len(alerts)}) ===", False))
@@ -2182,6 +2409,49 @@ if HAS_QT:
                                             score = a.get("ml_anomaly_score")
                                             lines.append(f"{ts} | NORMAL | {src} | {atk_type} | score={score} | model={ml_model}")
                                         self.msg_queue.put(("log", "\n".join(lines), False))
+
+                                    # Popup summary (same style as Run Detection).
+                                    try:
+                                        effective_total = len(alerts)
+                                        effective_ml = len(ml_attack_alerts)
+                                        effective_rule = len(attack_alerts)
+                                        popup_top_ip = None
+                                        if alerts:
+                                            ip_counts = defaultdict(int)
+                                            for a in alerts:
+                                                ip = (a.get("source_ip") or "").strip()
+                                                if ip:
+                                                    ip_counts[ip] += 1
+                                            popup_top_ip = max(ip_counts, key=ip_counts.get) if ip_counts else None
+                                        if effective_ml > 0:
+                                            severity_popup = "Cao"
+                                            action_status_popup = "Hành động ngay"
+                                            short_action = "Chặn tạm IP + kiểm tra SSH log"
+                                            decision_line = "⚠ Có tấn công (ML xác nhận)"
+                                            popup_title = "ELKShield Alert"
+                                        elif effective_rule > 0:
+                                            severity_popup = "Trung bình"
+                                            action_status_popup = "Theo dõi tăng cường"
+                                            short_action = "Theo dõi tăng cường + đối chiếu log nguồn"
+                                            decision_line = "⚠ Chỉ cảnh báo rule"
+                                            popup_title = "ELKShield Cảnh báo"
+                                        else:
+                                            severity_popup = "Thấp"
+                                            action_status_popup = "Tiếp tục giám sát"
+                                            short_action = "Tiếp tục giám sát"
+                                            decision_line = "✓ Không phát hiện tấn công"
+                                            popup_title = "ELKShield Thông báo"
+                                        popup_msg = (
+                                            f"{decision_line}\n"
+                                            f"Mức độ: {severity_popup}\n"
+                                            f"ML: {effective_ml}/{effective_total} | Rule: {effective_rule}/{effective_total}\n"
+                                            f"Trạng thái: {action_status_popup}\n"
+                                            f"IP chính: {popup_top_ip or '—'}\n"
+                                            f"Hành động: {short_action}"
+                                        )
+                                        self.msg_queue.put(("popup", popup_title, popup_msg, "warning", ""))
+                                    except Exception as e:
+                                        self.msg_queue.put(("log", f"Lỗi popup sau Start SIEM: {e}", True))
                             else:
                                 self.msg_queue.put(("log", msg2, True))
                         except Exception as e:
@@ -2193,7 +2463,7 @@ if HAS_QT:
                             ["scripts/run_by_architecture.py", "--no-browser"],
                             str(ROOT), 1200, self.msg_queue.put,
                         )
-                        webbrowser.open("http://localhost:5601/app/discover#/?_a=(index:ml-alerts)")
+                        webbrowser.open("http://localhost:5601/app/management/data/index_management/indices")
                 threading.Thread(target=_run_flow, daemon=True).start()
 
             elif action == "6.1 Train UNIFIED (gá»™p dataset)":
@@ -2363,6 +2633,9 @@ if HAS_QT:
                 if model_path:
                     run_id = datetime.utcnow().strftime("%H%M%S") + "-" + uuid.uuid4().hex[:6]
                     current_run_index_pattern = f"ml-alerts-*-{run_id}"
+                    # Keep last run context so "Defense Plan" can display defense aligned with the latest detection.
+                    self._last_run_index_pattern = current_run_index_pattern
+                    self._last_model_name_for_defense = model_name
                     ok = run_cmd_stream(
                         [
                             "scripts/run_pipeline_detection.py",
@@ -2550,16 +2823,41 @@ if HAS_QT:
                                         popup_top_ip = top_ip_sum or popup_top_ip
 
                                 if effective_ml > 0:
+                                    defense_short = ""
+                                    try:
+                                        if isinstance(checklist_items, list) and checklist_items:
+                                            defense_short = "; ".join(checklist_items[:3])
+                                    except Exception:
+                                        defense_short = ""
+                                    if not defense_short:
+                                        defense_short = "—"
+                                    action_status_popup = "Hành động ngay" if effective_ml > 0 else ("Theo dõi tăng cường" if effective_rule > 0 else "Tiếp tục giám sát")
+                                    severity_popup = "Cao" if effective_ml > 0 else ("Trung bình" if effective_rule > 0 else "Thấp")
+                                    short_action = (
+                                        "Chặn tạm IP + kiểm tra SSH log"
+                                        if effective_ml > 0
+                                        else ("Theo dõi tăng cường + đối chiếu log nguồn" if effective_rule > 0 else "Tiếp tục giám sát")
+                                    )
+                                    popup_title = "ELKShield Alert"
+                                    if effective_ml > 0:
+                                        decision_line = "⚠ Có tấn công (ML xác nhận)"
+                                    elif effective_rule > 0:
+                                        decision_line = "⚠ Chỉ cảnh báo rule"
+                                        popup_title = "ELKShield Cảnh báo"
+                                    else:
+                                        decision_line = "✓ Không phát hiện tấn công"
+                                        popup_title = "ELKShield Thông báo"
                                     popup_msg = (
-                                        f"ML attack detected: {effective_ml}/{effective_total}\n"
-                                        f"Rule warnings: {effective_rule}/{effective_total}\n"
-                                        f"Top IP: {popup_top_ip or '—'}\n"
-                                        f"Report: {report_path_or_err if report_ok else 'not saved'}\n"
-                                        "Xem Terminal Output để biết chi tiết."
+                                        f"{decision_line}\n"
+                                        f"Mức độ: {severity_popup}\n"
+                                        f"ML: {effective_ml}/{effective_total} | Rule: {effective_rule}/{effective_total}\n"
+                                        f"IP chính: {popup_top_ip or '—'}\n"
+                                        f"Hành động: {short_action}\n"
+                                        f"Báo cáo: {'Đã lưu (bấm Xem báo cáo)' if report_ok else 'Chưa lưu được'}"
                                     )
                                     self.msg_queue.put((
                                         "popup",
-                                        "ELKShield Alert",
+                                        popup_title,
                                         popup_msg,
                                         "warning",
                                         report_path_or_err if report_ok else "",
@@ -2702,6 +3000,100 @@ if HAS_QT:
 
         def _show_defense_recommendations_qt(self):
             """Äá»c káº¿t quáº£ detection (predictions) vÃ  hiá»ƒn thá»‹ Ä‘á» xuáº¥t phÃ²ng thá»§ theo loáº¡i táº¥n cÃ´ng."""
+            try:
+                from scripts.defense_recommendations import get_recommendations, format_recommendations_text
+            except ImportError:
+                try:
+                    from defense_recommendations import get_recommendations, format_recommendations_text
+                except ImportError:
+                    self._log_qt("Không tìm thấy module defense_recommendations.", is_error=True)
+                    return
+
+            def _ml_is_true(v):
+                return _to_bool(v)
+
+            def _format_top_actions(attack_type, severity, top_n=3):
+                """Format recommendations but limit to top-N actions for lecturer readability."""
+                try:
+                    items = get_recommendations(attack_type, severity) or []
+                except Exception:
+                    items = []
+                items = items[:top_n] if len(items) > top_n else items
+                if not items:
+                    # Fallback to full text formatter if get_recommendations fails.
+                    try:
+                        return format_recommendations_text(attack_type, severity)
+                    except Exception:
+                        return ""
+                lines = []
+                for i, (title, desc) in enumerate(items, 1):
+                    lines.append(f"{i}. {title}: {desc}")
+                return "\n".join(lines)
+
+            # 1) Prefer ES alerts for the latest detection run (aligned with run_id).
+            last_idx = getattr(self, "_last_run_index_pattern", "") or ""
+            last_model = getattr(self, "_last_model_name_for_defense", None)
+            if last_idx:
+                try:
+                    ok_es, msg_es, alerts = fetch_latest_alerts_from_es(
+                        index_pattern=last_idx,
+                        limit=50,
+                        model_name=last_model,
+                    )
+                    if ok_es and alerts:
+                        # Collect SOC-style stats per attack_type.
+                        from collections import Counter, defaultdict
+                        stats_map = defaultdict(lambda: {"ml_count": 0, "rule_count": 0})
+                        ip_counts = Counter()
+                        for a in alerts:
+                            ml_anomaly = _ml_is_true(a.get("ml_anomaly", False))
+                            is_attack = _ml_is_true(a.get("is_attack", False))
+                            if not (ml_anomaly or is_attack):
+                                continue
+                            at = (a.get("attack_type") or "").strip() or "unknown"
+                            src_ip = (a.get("source_ip") or "").strip()
+                            if src_ip:
+                                ip_counts[src_ip] += 1
+                            if ml_anomaly:
+                                stats_map[at]["ml_count"] += 1
+                            if is_attack:
+                                stats_map[at]["rule_count"] += 1
+
+                        if stats_map:
+                            top_ips = ip_counts.most_common(3)
+                            top_ips_txt = ", ".join([f"{ip} ({c})" for ip, c in top_ips]) if top_ips else "—"
+
+                            lines = []
+                            lines.append("=== DEFENSE PLAN (Aligned with latest run) ===")
+                            lines.append(f"Run index: {last_idx}")
+                            lines.append(f"Model: {last_model or '—'}")
+                            lines.append(f"Evidence: ES alerts (matched): {len(alerts)}")
+                            lines.append(f"Top evidence IPs: {top_ips_txt}")
+                            lines.append("")
+
+                            for at in sorted(stats_map.keys()):
+                                ml_count = int(stats_map[at].get("ml_count", 0) or 0)
+                                rule_count = int(stats_map[at].get("rule_count", 0) or 0)
+                                sev = "high" if ml_count > 0 else "medium"
+
+                                lines.append(f"--- {at} | Severity: {sev.upper()} ---")
+                                lines.append(f"ML confirmed: {ml_count} | Rule warnings: {rule_count}")
+                                lines.append(_format_top_actions(at, sev, top_n=3))
+                                lines.append("")
+
+                            # Triage guidance that is easy for lecturers.
+                            lines.append("=== Triage guidance (what to check first) ===")
+                            lines.append("1. Open Kibana Discover for ml-alerts and filter by the attack_type above.")
+                            lines.append("2. Verify the source_ip and @timestamp window around the alerts.")
+                            lines.append("3. Confirm whether ML anomalies are present (ml_anomaly) before deciding containment.")
+
+                            self._log_qt("\n".join(lines))
+                            return
+                except Exception as e:
+                    # Fallback to local CSV below
+                    self._log_qt(f"(Defense Plan) Lấy ES theo run_id thất bại: {e}. Fallback CSV...", False)
+
+            # 2) Fallback: read predictions CSV (older behavior), but compute severity correctly.
             pred_files = [
                 ROOT / "data" / "predictions.csv",
                 ROOT / "data" / "processed" / "predictions.csv",
@@ -2716,40 +3108,74 @@ if HAS_QT:
             if not csv_path:
                 self._log_qt("Chưa có file predictions. Chạy Detection (mục 7) trước.", is_error=True)
                 return
-            try:
-                from scripts.defense_recommendations import get_recommendations, format_recommendations_text
-            except ImportError:
-                try:
-                    from defense_recommendations import get_recommendations, format_recommendations_text
-                except ImportError:
-                    self._log_qt("Không tìm thấy module defense_recommendations.", is_error=True)
-                    return
-            lines = []
-            seen_types = set()
+
+            from collections import Counter, defaultdict
+            stats_map = defaultdict(lambda: {"ml_count": 0, "rule_count": 0})
+            ip_counts = Counter()
             with open(csv_path, "r", encoding="utf-8", errors="replace") as f:
                 reader = csv.DictReader(f)
                 if not reader.fieldnames:
                     self._log_qt("File predictions rỗng hoặc không đúng format.", is_error=True)
                     return
                 for row in reader:
-                    is_anomaly = (
-                        str(row.get("ml_anomaly", "")).strip().lower() in ("true", "1", "yes")
-                        or str(row.get("prediction", "")).strip().lower() in ("true", "1", "yes")
-                        or str(row.get("is_attack", "")).strip().lower() == "true"
-                    )
-                    if not is_anomaly:
+                    ml_anomaly = _ml_is_true(row.get("ml_anomaly", False))
+                    is_attack = _ml_is_true(row.get("is_attack", False))
+                    # Some csv might not contain ml_anomaly; fallback to prediction/is_attack.
+                    if not ml_anomaly and not is_attack:
+                        pred_v = str(row.get("prediction", "")).strip().lower()
+                        pred_is_true = pred_v in ("true", "1", "yes")
+                        if not pred_is_true:
+                            continue
+                        ml_anomaly = False
+                        is_attack = True
+
+                    if not (ml_anomaly or is_attack):
                         continue
                     at = (row.get("attack_type") or "").strip() or "unknown"
-                    if at not in seen_types:
-                        seen_types.add(at)
-                        lines.append("--- Đề xuất phòng thủ (loại: %s) ---" % (at or "unknown"))
-                        lines.append(format_recommendations_text(at, "high"))
-                        lines.append("")
-            if not lines:
-                lines.append("Không có bản ghi bất thường trong file predictions, hoặc chưa chạy Detection.")
-                lines.append("Đề xuất mẫu (unknown):")
-                lines.append(format_recommendations_text("unknown", "high"))
-            self._log_qt("\n".join(lines))
+                    src_ip = (row.get("source_ip") or "").strip()
+                    if src_ip:
+                        ip_counts[src_ip] += 1
+                    if ml_anomaly:
+                        stats_map[at]["ml_count"] += 1
+                    if is_attack:
+                        stats_map[at]["rule_count"] += 1
+
+            if stats_map:
+                top_ips = ip_counts.most_common(3)
+                top_ips_txt = ", ".join([f"{ip} ({c})" for ip, c in top_ips]) if top_ips else "—"
+
+                lines = []
+                lines.append("=== DEFENSE PLAN (Fallback: predictions.csv) ===")
+                lines.append(f"Source file: {csv_path.name}")
+                lines.append(f"Top evidence IPs: {top_ips_txt}")
+                lines.append("")
+
+                for at in sorted(stats_map.keys()):
+                    ml_count = int(stats_map[at].get("ml_count", 0) or 0)
+                    rule_count = int(stats_map[at].get("rule_count", 0) or 0)
+                    sev = "high" if ml_count > 0 else "medium"
+
+                    lines.append(f"--- {at} | Severity: {sev.upper()} ---")
+                    lines.append(f"ML confirmed: {ml_count} | Rule warnings: {rule_count}")
+                    lines.append(_format_top_actions(at, sev, top_n=3))
+                    lines.append("")
+
+                lines.append("=== Triage guidance (what to check first) ===")
+                lines.append("1. Kiểm tra source_ip và @timestamp trong file/ES để xác định khung thời gian.")
+                lines.append("2. Xác nhận ml_anomaly trước khi quyết định containment.")
+                lines.append("3. Dùng attack_type để drill-down log nguồn trong Kibana.")
+
+                self._log_qt("\n".join(lines))
+            else:
+                self._log_qt(
+                    "\n".join(
+                        [
+                            "Không có bản ghi bất thường trong predictions (hoặc chưa chạy Detection).",
+                            "Đề xuất mẫu (unknown):",
+                            _format_top_actions("unknown", "medium", top_n=3),
+                        ]
+                    )
+                )
 
 
 if __name__ == "__main__":

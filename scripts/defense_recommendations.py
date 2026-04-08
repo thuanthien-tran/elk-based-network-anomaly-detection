@@ -9,10 +9,10 @@ from typing import List, Tuple
 RECOMMENDATIONS = {
     "brute_force": {
         "high": [
-            ("Bat fail2ban hoac similar", "Gioi han so lan dang nhap that bai, block IP tam thoi (fail2ban, DenyHosts)."),
-            ("Chinh sach mat khau manh", "Yeu cau mat khau phuc tap, doi dinh ky, 2FA cho SSH/admin."),
-            ("Gioi han so ket noi SSH", "Cau hinh MaxStartups trong sshd_config de giam song song connection."),
-            ("Chi cho phep dang nhap bang key", "Tat password authentication, chi dung SSH key (PasswordAuthentication no)."),
+            ("Bat chặn tự động (fail2ban)", "Theo dõi các lần đăng nhập sai. Nếu cùng 1 IP thử quá nhiều lần thì chặn IP tạm thời để ngăn brute-force."),
+            ("Chính sách mật khẩu mạnh", "Bắt mật khẩu đủ dài và đủ mạnh. Khuyến nghị ưu tiên SSH key thay vì mật khẩu; nếu có thể thì bật thêm 2FA cho tài khoản quản trị."),
+            ("Giới hạn số phiên/kết nối SSH", "Giới hạn số phiên SSH và số lần thử đăng nhập đồng thời. Việc này làm giảm hiệu quả các đợt quét/brute-force."),
+            ("Chỉ cho SSH key", "Tắt đăng nhập bằng mật khẩu, chỉ cho đăng nhập bằng SSH key (giảm tối đa rủi ro brute-force từ password)."),
         ],
         "medium": [
             ("Theo doi log dang nhap", "Giam sat auth.log/sshd, canh bao khi nhieu failed tu cung IP."),
